@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Rico Plus
+GenericName=RTF Workspace Editor
+Comment=Create, edit, view, and organize RTF documents in workspaces
+Exec=rico-plus %F
+Icon=rico-plus
+Terminal=false
+Categories=Office;TextEditor;Utility;
+Keywords=RTF;Editor;Notes;Workspace;
+MimeType=application/rtf;text/rtf;application/x-rtf;
+StartupNotify=true
+StartupWMClass=rico-plus
+X-AppImage-Version=0.0.2

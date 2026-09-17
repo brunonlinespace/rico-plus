@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.brunonlinespace.rico_plus</id>
+  <name>Rico Plus</name>
+  <summary>Workspace-scale RTF editor</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <description>
+    <p>
+      Rico Plus discovers, edits, views, and organizes RTF documents
+      across registered workspaces.
+    </p>
+    <p>
+      It combines a Ribbon-based rich-text editor with folder dashboards,
+      view-only opening, drag-and-drop organization, and asynchronous scanning.
+    </p>
+  </description>
+  <launchable type="desktop-id">rico-plus.desktop</launchable>
+  <url type="homepage">https://github.com/brunonlinespace/rico-plus</url>
+  <url type="bugtracker">https://github.com/brunonlinespace/rico-plus/issues</url>
+  <provides>
+    <binary>rico-plus</binary>
+  </provides>
+  <releases>
+    <release version="0.0.2" date="2026-09-17">
+      <description><p>Restores Marko-style file headings, fixes live theme/editor-theme synchronization, refines Rico icon-family selectors, and makes the existing Rico canvas focus accent persistent.</p></description>
+    </release>
+    <release version="0.0.1-r7" date="2026-09-17">
+      <description><p>Restores the full first-time tutorial wizard, adds the missing Rico theme/icon selector artwork, and synchronizes editor appearance with App Theme until explicitly overridden.</p></description>
+    </release>
+    <release version="0.0.1-r6" date="2026-09-17">
+      <description><p>Fixes persistent Plasma global-menu ownership, persistent Lock Editor behavior, and the specified appmenu/shortcut corrections.</p></description>
+    </release>
+    <release version="0.0.1-r5-r1" date="2026-09-17">
+      <description><p>Restores Plasma global-menu export, shortcut-bearing Ribbon tooltips, New Window, F4 Properties, and the approved File/Configure Ribbon arrangements.</p></description>
+    </release>
+    <release version="0.0.1-r5" date="2026-09-17">
+      <description>
+        <p>Restores desktop global-menu integration and relabels Editor Icons to App Icons.</p>
+      </description>
+    </release>
+    <release version="0.0.1-r4" date="2026-09-17">
+      <description>
+        <p>Rebases menu, Ribbon, shortcut, and command ownership onto one persistent Plus shell while retaining Ricopad as the RTF document engine.</p>
+      </description>
+    </release>
+    <release version="0.0.1-r3" date="2026-09-16">
+      <description>
+        <p>Restores the full-width managed-workspace Ribbon, fixes shortcut ownership, and clears saved sidebar state immediately.</p>
+      </description>
+    </release>
+    <release version="0.0.1-r1" date="2026-09-16">
+      <description>
+        <p>Corrects embedded editor visibility and adds rendered-interface regression coverage.</p>
+      </description>
+    </release>
+    <release version="0.0.1" date="2026-09-16">
+      <description>
+        <p>Rico Plus 0.0.1 source release.</p>
+      </description>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1" />
+</component>
