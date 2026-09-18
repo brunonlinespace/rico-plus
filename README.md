@@ -86,11 +86,6 @@ External drag-and-drop onto a dashboard or folder is an explicit import operatio
       alt="Rico Plus Dashboard"
       width="560"
   >
-  <img
-      src="Screenshots/Screenshot_20260918_131337.png"
-      alt="Rico Plus Mini Dashboard"
-      width="560"
-  >
 </p>
 
 ## Rich-text editing
@@ -373,6 +368,11 @@ Documents remain ordinary `.rtf` files and are not embedded into the configurati
   <img
       src="Screenshots/Screenshot_20260918_132315.png"
       alt="Rico Plus Quick Tour 6"
+      width="560"
+  >
+  <img
+      src="Screenshots/Screenshot_20260918_131337.png"
+      alt="Rico Plus Mini Dashboard"
       width="560"
   >
 
