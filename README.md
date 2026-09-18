@@ -1,3 +1,13 @@
+<p align="center">
+  <a href="https://github.com/brunonlinespace/rico-plus">
+    <img
+      src="rico_plus/assets/icons/ricopad-about.png"
+      alt="Rico Plus"
+      width="256"
+    >
+  </a>
+</p>
+
 # Rico Plus
 
 **Friendly. Fast. Focused.**
