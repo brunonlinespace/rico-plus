@@ -6,6 +6,13 @@
       width="256"
     >
   </a>
+  <a href="https://github.com/brunonlinespace/rico-plus">
+    <img
+      src="Screenshots/Screenshot_20260918_130630.png"
+      alt="Rico Plus Dashboard"
+      width="256"
+    >
+  </a>
 </p>
 
 # Rico Plus
