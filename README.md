@@ -161,14 +161,14 @@ Choose between:
   <img
       src="Screenshots/Screenshot_20260918_131847.png"
       alt="Rico Plus Light Classic"
-      width="560"
+      width="780"
   >
 </p>
 <p align="center">
   <img
       src="Screenshots/Screenshot_20260918_131920.png"
       alt="Rico Plus Light New"
-      width="560"
+      width="780"
   >
 </p>
 
@@ -272,6 +272,7 @@ Documents remain ordinary `.rtf` files and are not embedded into the configurati
 
 ## AppMenu
 
+<p>
   <img
       src="Screenshots/Screenshot_20260918_131459.png"
       alt="Rico Plus File"
@@ -337,6 +338,7 @@ Documents remain ordinary `.rtf` files and are not embedded into the configurati
       alt="Rico Plus Settings"
       width="560"
   >
+</p>
 
 ## QuickTour
 
