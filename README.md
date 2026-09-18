@@ -381,7 +381,7 @@ Documents remain ordinary `.rtf` files and are not embedded into the configurati
 </p>
 
 
-## Quick Tour
+## More Screenshots
 
 <p align="center">
   <img
