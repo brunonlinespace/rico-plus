@@ -6,13 +6,6 @@
       width="256"
     >
   </a>
-  <a href="https://github.com/brunonlinespace/rico-plus">
-    <img
-      src="Screenshots/Screenshot_20260918_130630.png"
-      alt="Rico Plus Dashboard"
-      width="256"
-    >
-  </a>
 </p>
 
 # Rico Plus
@@ -87,6 +80,14 @@ An RTF opened by the operating system from outside the active workspace is treat
 
 External drag-and-drop onto a dashboard or folder is an explicit import operation. Internal drag-and-drop moves documents between workspace folders.
 
+<p>
+  <img
+      src="Screenshots/Screenshot_20260918_130630.png"
+      alt="Rico Plus Light Editor"
+      width="280"
+  >
+</p>
+
 ## Rich-text editing
 
 Rico Plus keeps Ricopad's RTF editing model. Supported editing features include:
@@ -107,6 +108,14 @@ Rico Plus keeps Ricopad's RTF editing model. Supported editing features include:
 
 Rico Plus writes standards-based RTF and includes interoperability checks covering common LibreOffice workflows.
 
+<p>
+  <img
+      src="Screenshots/Screenshot_20260918_131054.png"
+      alt="Rico Plus Light Editor"
+      width="280"
+  >
+</p>
+
 ## Lock Editor
 
 **Lock Editor** provides a persistent read-only editing state for the managed editor. When enabled, document-mutating commands are disabled, including Symbols, while navigation, search, selection, and copying remain available.
@@ -121,9 +130,25 @@ Rico Plus provides two separate but related appearance layers.
 
 Choose **System**, **Dark**, or **Light** for the application shell.
 
+<p>
+  <img
+      src="Screenshots/Screenshot_20260918_1312264.png"
+      alt="Rico Plus Light Theme"
+      width="280"
+  >
+</p>
+
 ### Editor appearance
 
 The editor canvas follows the active application theme by default. **Dark Editor** can be used to create a persistent editor-only light/dark override.
+
+<p>
+  <img
+      src="Screenshots/Screenshot_20260918_131214.png"
+      alt="Rico Plus Light Editor"
+      width="280"
+  >
+</p>
 
 ### App Icons
 
@@ -131,6 +156,21 @@ Choose between:
 
 - **Rico Icons Classic**
 - **Rico Icons New**
+
+<p>
+  <img
+      src="Screenshots/Screenshot_20260918_131847.png"
+      alt="Rico Plus Light Classic"
+      width="280"
+  >
+</p>
+<p>
+  <img
+      src="Screenshots/Screenshot_20260918_131920.png"
+      alt="Rico Plus Light New"
+      width="280"
+  >
+</p>
 
 Both icon families provide light- and dark-interface variants.
 
@@ -162,6 +202,14 @@ Both icon families provide light- and dark-interface variants.
 | `Shift+F1` | Tutorial Wizard |
 
 The complete live shortcut inventory is available from **Help → Keyboard Shortcuts**.
+
+<p>
+  <img
+      src="Screenshots/Screenshot_20260918_133002.png"
+      alt="Rico Plus Light New"
+      width="280"
+  >
+</p>
 
 ## Running from source
 
@@ -221,6 +269,107 @@ Additional QA and release documentation is available under `rico_plus/docs/`.
 Rico Plus stores its application configuration outside the document workspace. The exact configuration path is displayed in **Help → About Rico Plus**.
 
 Documents remain ordinary `.rtf` files and are not embedded into the configuration.
+
+## AppMenu
+
+  <img
+      src="Screenshots/Screenshot_20260918_131459.png"
+      alt="Rico Plus Light New"
+      width="280"
+  >
+  <img
+      src="Screenshots/Screenshot_20260918_131527.png"
+      alt="Rico Plus Light New"
+      width="280"
+  >
+  <img
+      src="Screenshots/Screenshot_20260918_131533.png"
+      alt="Rico Plus Light New"
+      width="280"
+  >
+  <img
+      src="Screenshots/Screenshot_20260918_131542.png"
+      alt="Rico Plus Light New"
+      width="280"
+  >
+  <img
+      src="Screenshots/Screenshot_20260918_131549.png"
+      alt="Rico Plus Light New"
+      width="280"
+  >
+  <img
+      src="Screenshots/Screenshot_20260918_131554.png"
+      alt="Rico Plus Light New"
+      width="280"
+  >
+  <img
+      src="Screenshots/Screenshot_20260918_131601.png"
+      alt="Rico Plus Light New"
+      width="280"
+  >
+  <img
+      src="Screenshots/Screenshot_20260918_131636.png"
+      alt="Rico Plus Light New"
+      width="280"
+  >
+  <img
+      src="Screenshots/Screenshot_20260918_131644.png"
+      alt="Rico Plus Light New"
+      width="280"
+  >
+  <img
+      src="Screenshots/Screenshot_20260918_131649.png"
+      alt="Rico Plus Light New"
+      width="280"
+  >
+  <img
+      src="Screenshots/Screenshot_20260918_131659.png"
+      alt="Rico Plus Light New"
+      width="280"
+  >
+  <img
+      src="Screenshots/Screenshot_20260918_131707.png"
+      alt="Rico Plus Light New"
+      width="280"
+  >
+  <img
+      src="Screenshots/Screenshot_20260918_131712.png"
+      alt="Rico Plus Light New"
+      width="280"
+  >
+
+## QuickTour
+
+  <img
+      src="Screenshots/Screenshot_20260918_132222.png"
+      alt="Rico Plus Light New"
+      width="280"
+  >
+  <img
+      src="Screenshots/Screenshot_20260918_132256.png"
+      alt="Rico Plus Light New"
+      width="280"
+  >
+  <img
+      src="Screenshots/Screenshot_20260918_132300.png"
+      alt="Rico Plus Light New"
+      width="280"
+  >
+  <img
+      src="Screenshots/Screenshot_20260918_132310.png"
+      alt="Rico Plus Light New"
+      width="280"
+  >
+  <img
+      src="Screenshots/Screenshot_20260918_132312.png"
+      alt="Rico Plus Light New"
+      width="280"
+  >
+  <img
+      src="Screenshots/Screenshot_20260918_132315.png"
+      alt="Rico Plus Light New"
+      width="280"
+  >
 
 ## License
 
