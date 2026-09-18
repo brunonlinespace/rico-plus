@@ -84,7 +84,7 @@ External drag-and-drop onto a dashboard or folder is an explicit import operatio
   <img
       src="Screenshots/Screenshot_20260918_130630.png"
       alt="Rico Plus Dashboard"
-      width="1200"
+      width="1000"
   >
 </p>
 
@@ -112,7 +112,7 @@ Rico Plus writes standards-based RTF and includes interoperability checks coveri
   <img
       src="Screenshots/Screenshot_20260918_131054.png"
       alt="Rico Plus Editor"
-      width="1200"
+      width="1000"
   >
 </p>
 
