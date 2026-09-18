@@ -80,7 +80,7 @@ An RTF opened by the operating system from outside the active workspace is treat
 
 External drag-and-drop onto a dashboard or folder is an explicit import operation. Internal drag-and-drop moves documents between workspace folders.
 
-<p>
+<p align="center">
   <img
       src="Screenshots/Screenshot_20260918_130630.png"
       alt="Rico Plus Dashboard"
@@ -113,7 +113,7 @@ Rico Plus keeps Ricopad's RTF editing model. Supported editing features include:
 
 Rico Plus writes standards-based RTF and includes interoperability checks covering common LibreOffice workflows.
 
-<p>
+<p align="center">
   <img
       src="Screenshots/Screenshot_20260918_131054.png"
       alt="Rico Plus Editor"
@@ -135,9 +135,9 @@ Rico Plus provides two separate but related appearance layers.
 
 Choose **System**, **Dark**, or **Light** for the application shell.
 
-<p>
+<p align="center">
   <img
-      src="Screenshots/Screenshot_20260918_131224.png"
+      src="Screenshots/Screenshot_20260918_131226.png"
       alt="Rico Plus Light Theme"
       width="560"
   >
@@ -147,7 +147,7 @@ Choose **System**, **Dark**, or **Light** for the application shell.
 
 The editor canvas follows the active application theme by default. **Dark Editor** can be used to create a persistent editor-only light/dark override.
 
-<p>
+<p align="center">
   <img
       src="Screenshots/Screenshot_20260918_131214.png"
       alt="Rico Plus Light Editor"
@@ -162,14 +162,14 @@ Choose between:
 - **Rico Icons Classic**
 - **Rico Icons New**
 
-<p>
+<p align="center">
   <img
       src="Screenshots/Screenshot_20260918_131847.png"
       alt="Rico Plus Light Classic"
       width="560"
   >
 </p>
-<p>
+<p align="center">
   <img
       src="Screenshots/Screenshot_20260918_131920.png"
       alt="Rico Plus Light New"
@@ -208,7 +208,7 @@ Both icon families provide light- and dark-interface variants.
 
 The complete live shortcut inventory is available from **Help → Keyboard Shortcuts**.
 
-<p>
+<p align="center">
   <img
       src="Screenshots/Screenshot_20260918_133002.png"
       alt="Rico Plus Shortcut Helper"
