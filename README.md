@@ -14,8 +14,6 @@
 
 Rico Plus is a workspace-scale Rich Text Format editor built around Ricopad's standards-based RTF engine and Ribbon interface. It adds managed workspaces, folder navigation, dashboards, persistent application settings, and Plus-family shell behavior while continuing to read and write ordinary `.rtf` files.
 
-Ricopad is the spiritual successor of the defunct Microsoft Wordpad but for Linux, with a modern interface.
-
 Current release: **0.0.2**
 
 Repository: <https://github.com/brunonlinespace/rico-plus>
@@ -25,6 +23,8 @@ Repository: <https://github.com/brunonlinespace/rico-plus>
 Rico Plus is designed for people who want Ricopad's rich-text editing in a larger, persistent workspace. A workspace is an ordinary folder containing RTF documents and subfolders; Rico Plus does not introduce a private document format or require documents to be imported into a database.
 
 Only the active workspace is scanned and watched. Files opened from outside that workspace can be edited as external sessions without being copied into it.
+
+Ricopad is the spiritual successor of the defunct Microsoft Wordpad but for Linux, with a modern interface.
 
 ## Highlights
 
