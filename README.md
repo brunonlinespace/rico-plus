@@ -272,7 +272,7 @@ Documents remain ordinary `.rtf` files and are not embedded into the configurati
 
 ## AppMenu
 
-<p>
+<p align="center">
   <img
       src="Screenshots/Screenshot_20260918_131459.png"
       alt="Rico Plus File"
@@ -342,6 +342,7 @@ Documents remain ordinary `.rtf` files and are not embedded into the configurati
 
 ## QuickTour
 
+<p align="center">
   <img
       src="Screenshots/Screenshot_20260918_132222.png"
       alt="Rico Plus Quick Tour 1"
@@ -377,6 +378,7 @@ Documents remain ordinary `.rtf` files and are not embedded into the configurati
       alt="Rico Plus Mini Dashboard"
       width="560"
   >
+</p>
 
 ## License
 
