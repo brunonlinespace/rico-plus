@@ -83,8 +83,13 @@ External drag-and-drop onto a dashboard or folder is an explicit import operatio
 <p>
   <img
       src="Screenshots/Screenshot_20260918_130630.png"
-      alt="Rico Plus Light Editor"
-      width="280"
+      alt="Rico Plus Dashboard"
+      width="560"
+  >
+  <img
+      src="Screenshots/Screenshot_20260918_131337.png"
+      alt="Rico Plus Mini Dashboard"
+      width="560"
   >
 </p>
 
@@ -111,8 +116,8 @@ Rico Plus writes standards-based RTF and includes interoperability checks coveri
 <p>
   <img
       src="Screenshots/Screenshot_20260918_131054.png"
-      alt="Rico Plus Light Editor"
-      width="280"
+      alt="Rico Plus Editor"
+      width="560"
   >
 </p>
 
@@ -132,9 +137,9 @@ Choose **System**, **Dark**, or **Light** for the application shell.
 
 <p>
   <img
-      src="Screenshots/Screenshot_20260918_1312264.png"
+      src="Screenshots/Screenshot_20260918_131224.png"
       alt="Rico Plus Light Theme"
-      width="280"
+      width="560"
   >
 </p>
 
@@ -146,7 +151,7 @@ The editor canvas follows the active application theme by default. **Dark Editor
   <img
       src="Screenshots/Screenshot_20260918_131214.png"
       alt="Rico Plus Light Editor"
-      width="280"
+      width="560"
   >
 </p>
 
@@ -161,14 +166,14 @@ Choose between:
   <img
       src="Screenshots/Screenshot_20260918_131847.png"
       alt="Rico Plus Light Classic"
-      width="280"
+      width="560"
   >
 </p>
 <p>
   <img
       src="Screenshots/Screenshot_20260918_131920.png"
       alt="Rico Plus Light New"
-      width="280"
+      width="560"
   >
 </p>
 
@@ -206,8 +211,8 @@ The complete live shortcut inventory is available from **Help → Keyboard Short
 <p>
   <img
       src="Screenshots/Screenshot_20260918_133002.png"
-      alt="Rico Plus Light New"
-      width="280"
+      alt="Rico Plus Shortcut Helper"
+      width="560"
   >
 </p>
 
@@ -274,101 +279,101 @@ Documents remain ordinary `.rtf` files and are not embedded into the configurati
 
   <img
       src="Screenshots/Screenshot_20260918_131459.png"
-      alt="Rico Plus Light New"
-      width="280"
+      alt="Rico Plus File"
+      width="560"
   >
   <img
       src="Screenshots/Screenshot_20260918_131527.png"
-      alt="Rico Plus Light New"
-      width="280"
+      alt="Rico Plus File"
+      width="560"
   >
   <img
       src="Screenshots/Screenshot_20260918_131533.png"
-      alt="Rico Plus Light New"
-      width="280"
+      alt="Rico Plus Edit"
+      width="560"
   >
   <img
       src="Screenshots/Screenshot_20260918_131542.png"
-      alt="Rico Plus Light New"
-      width="280"
+      alt="Rico Plus Format"
+      width="560"
   >
   <img
       src="Screenshots/Screenshot_20260918_131549.png"
-      alt="Rico Plus Light New"
-      width="280"
+      alt="Rico Plus Format"
+      width="560"
   >
   <img
       src="Screenshots/Screenshot_20260918_131554.png"
-      alt="Rico Plus Light New"
-      width="280"
+      alt="Rico Plus Format"
+      width="560"
   >
   <img
       src="Screenshots/Screenshot_20260918_131601.png"
-      alt="Rico Plus Light New"
-      width="280"
+      alt="Rico Plus Insert"
+      width="560"
   >
   <img
       src="Screenshots/Screenshot_20260918_131636.png"
-      alt="Rico Plus Light New"
-      width="280"
+      alt="Rico Plus Insert"
+      width="560"
   >
   <img
       src="Screenshots/Screenshot_20260918_131644.png"
-      alt="Rico Plus Light New"
-      width="280"
+      alt="Rico Plus View"
+      width="560"
   >
   <img
       src="Screenshots/Screenshot_20260918_131649.png"
-      alt="Rico Plus Light New"
-      width="280"
+      alt="Rico Plus View"
+      width="560"
   >
   <img
       src="Screenshots/Screenshot_20260918_131659.png"
-      alt="Rico Plus Light New"
-      width="280"
+      alt="Rico Plus Settings"
+      width="560"
   >
   <img
       src="Screenshots/Screenshot_20260918_131707.png"
-      alt="Rico Plus Light New"
-      width="280"
+      alt="Rico Plus Settings"
+      width="560"
   >
   <img
       src="Screenshots/Screenshot_20260918_131712.png"
-      alt="Rico Plus Light New"
-      width="280"
+      alt="Rico Plus Settings"
+      width="560"
   >
 
 ## QuickTour
 
   <img
       src="Screenshots/Screenshot_20260918_132222.png"
-      alt="Rico Plus Light New"
-      width="280"
+      alt="Rico Plus Quick Tour 1"
+      width="560"
   >
   <img
       src="Screenshots/Screenshot_20260918_132256.png"
-      alt="Rico Plus Light New"
-      width="280"
+      alt="Rico Plus Quick Tour 2"
+      width="560"
   >
   <img
       src="Screenshots/Screenshot_20260918_132300.png"
-      alt="Rico Plus Light New"
-      width="280"
+      alt="Rico Plus Quick Tour 3"
+      width="560"
   >
   <img
       src="Screenshots/Screenshot_20260918_132310.png"
-      alt="Rico Plus Light New"
-      width="280"
+      alt="Rico Plus Quick Tour 4"
+      width="560"
   >
   <img
       src="Screenshots/Screenshot_20260918_132312.png"
-      alt="Rico Plus Light New"
-      width="280"
+      alt="Rico Plus Quick Tour 5"
+      width="560"
   >
   <img
       src="Screenshots/Screenshot_20260918_132315.png"
-      alt="Rico Plus Light New"
-      width="280"
+      alt="Rico Plus Quick Tour 6"
+      width="560"
   >
 
 ## License
