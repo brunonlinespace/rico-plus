@@ -110,7 +110,7 @@ Rico Plus writes standards-based RTF and includes interoperability checks coveri
 
 <p align="center">
   <img
-      src="Screenshots/Screenshot_20260918_131054.png"
+      src="Screenshots/Screenshot_20260918_135636.png"
       alt="Rico Plus Editor"
       width="780"
   >
@@ -340,7 +340,7 @@ Documents remain ordinary `.rtf` files and are not embedded into the configurati
   >
 </p>
 
-## QuickTour
+## Quick Tour
 
 <p align="center">
   <img
@@ -376,6 +376,22 @@ Documents remain ordinary `.rtf` files and are not embedded into the configurati
   <img
       src="Screenshots/Screenshot_20260918_131337.png"
       alt="Rico Plus Mini Dashboard"
+      width="560"
+  >
+</p>
+
+
+## Quick Tour
+
+<p align="center">
+  <img
+      src="Screenshots/Screenshot_20260918_131337.png"
+      alt="Rico Plus Mini Dashboard"
+      width="560"
+  >
+   <img
+      src="Screenshots/Screenshot_20260918_135830.png"
+      alt="Rico Plus Collapsed Mode"
       width="560"
   >
 </p>
