@@ -89,6 +89,14 @@ An RTF opened by the operating system from outside the active workspace is treat
 
 The main Dashboard supports kinetic touch panning in both List and Grid views. The folder tree and Folder Dashboard deliberately retain their existing interaction model.
 
+<p align="center">
+  <img
+      src="Screenshots/Screenshot_20260918_130630.png"
+      alt="Rico Plus Dashboard"
+      width="780"
+  >
+</p>
+
 ### Drag and drop
 
 Rico Plus distinguishes between opening dropped documents, importing external documents, and moving documents inside a workspace.
@@ -100,14 +108,6 @@ Rico Plus distinguishes between opening dropped documents, importing external do
 - Internal document drag-and-drop onto workspace folders moves documents through Rico Plus's managed file operations.
 
 When several RTF files are dropped while **Open on Active Window** is selected, the first opens in the active window and additional files open in new windows.
-
-<p align="center">
-  <img
-      src="Screenshots/Screenshot_20260918_130630.png"
-      alt="Rico Plus Dashboard"
-      width="780"
-  >
-</p>
 
 ## Rich-text editing
 
