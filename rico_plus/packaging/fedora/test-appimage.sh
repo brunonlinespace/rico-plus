@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
-    echo "Usage: $0 /path/to/Rico_Plus-0.0.2-x86_64.AppImage" >&2
+    echo "Usage: $0 /path/to/Rico_Plus-0.0.3-x86_64.AppImage" >&2
     exit 2
 fi
 
