@@ -19,13 +19,14 @@ if str(PROJECT) not in sys.path:
 from PyQt6.QtCore import QEventLoop, QTimer, Qt
 from PyQt6.QtGui import QFont, QTextCharFormat, QTextCursor
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QMainWindow
 
 from rico_plus.app import requested_open_paths
 from rico_plus.rtf_codec import decode_rtf
 from rico_plus.services.config_service import ConfigService
 from rico_plus.services.project_registry import ProjectRegistry
 from rico_plus.services.runtime_paths import RuntimePaths
+from rico_plus.services.rtf_new_document import build_new_document_rtf_from_config
 from rico_plus.widgets.main_window import MainWindow
 from rico_plus.widgets.shortcuts_dialog import (
     _shortcut_query_matches,
@@ -122,12 +123,18 @@ with tempfile.TemporaryDirectory(prefix="rico-plus-workspace-qa-") as raw_base:
     require(page is not None and page.document.path == created, "New RTF did not open")
     require(not page.is_modified and not window.repository.dirty, "Virgin RTF opened dirty")
     require(page.isVisible(), "Editor page is not visible")
-    require(not page.engine.isWindow(), "Embedded RTF editor remained a hidden top-level window")
-    require(page.engine.isVisible(), "Embedded RTF editor is not visible")
-    require(page.engine.centralWidget().isVisible(), "RTF editor central surface is not visible")
+    require(type(page._surface).__name__ == "RicopadEditorWidget", "Managed page did not use the extracted Ricopad editor widget")
+    require(not isinstance(page._surface, QMainWindow), "Managed editor regressed to a nested QMainWindow")
+    require(not page._surface.isWindow(), "Managed RTF editor surface became a top-level window")
+    require(page._surface.minimumWidth() == 0, "Managed editor surface imposes a standalone minimum width")
+    require(page.editor.minimumWidth() == 0, "Rich-text editor imposes a standalone minimum width")
+    require(page._surface.isVisible(), "Managed RTF editor is not visible")
+    require(page.editor.isVisible(), "RTF editor canvas is not visible")
     require(
-        page.engine.menuWidget() is None,
-        "Embedded editor installed a competing QMainWindow menu bar",
+        not hasattr(page._surface, "centralWidget")
+        and not hasattr(page._surface, "menuWidget")
+        and not hasattr(page._surface, "statusBar"),
+        "Managed editor regressed to a QMainWindow compatibility API",
     )
     require(
         app_menu_titles() == expected_app_menus,
@@ -135,7 +142,7 @@ with tempfile.TemporaryDirectory(prefix="rico-plus-workspace-qa-") as raw_base:
     )
     require(
         window.save_action in window.file_menu.actions()
-        and window.save_action is not page.engine.save_action,
+        and window.save_action is not page._surface.save_action,
         "Shell File menu does not own its stable Save command",
     )
     page.editor.setFocus()
@@ -150,10 +157,18 @@ with tempfile.TemporaryDirectory(prefix="rico-plus-workspace-qa-") as raw_base:
         app_menu_titles() == expected_app_menus,
         "Sidebar focus replaced the shell-owned application menu",
     )
+    # The managed editor must reflow to the actual Plus viewport rather than
+    # retaining standalone Ricopad's 720 px minimum-window geometry.
+    window.resize(560, 720)
+    wait(100)
+    require(
+        page.editor.viewport().width() <= page.width(),
+        "Word-wrap viewport is wider than the visible EditorPage",
+    )
     require(window.shell_ribbon.isVisible(), "Shell Ribbon is not visible")
     require(
-        not page.engine.ribbon_tabs.isVisible(),
-        "Embedded Ricopad Ribbon leaked into the document page",
+        not hasattr(page._surface, "ribbon_tabs"),
+        "Managed editor constructed a hidden Ricopad Ribbon",
     )
     require(
         window.shell_ribbon.parent() is window.ribbon_host
@@ -161,15 +176,15 @@ with tempfile.TemporaryDirectory(prefix="rico-plus-workspace-qa-") as raw_base:
         and window.shell_ribbon.width() == window.ribbon_host.width(),
         "Shell Ribbon does not span the complete workspace above the sidebar",
     )
-    require(page.engine.visual_editor.isVisible(), "Document canvas is not visible")
+    require(page._surface.visual_editor.isVisible(), "Document canvas is not visible")
     require(
         window.shell_ribbon.tabs.width() > 0
         and window.shell_ribbon.tabs.height() > window.shell_ribbon.tabs.tabBar().height(),
         "Shell Ribbon has no rendered command-page geometry",
     )
     require(
-        page.engine.visual_editor.width() > 0
-        and page.engine.visual_editor.height() > 0,
+        page._surface.visual_editor.width() > 0
+        and page._surface.visual_editor.height() > 0,
         "Document canvas has no visible rendered area",
     )
     rendered_editor = window.centralWidget().grab()
@@ -184,16 +199,19 @@ with tempfile.TemporaryDirectory(prefix="rico-plus-workspace-qa-") as raw_base:
         == ["File", "Home", "Insert", "Configure", "Help"],
         "Shell Ribbon tab inventory changed",
     )
-    require(not page.engine.toolbar_stack.isVisible(), "Hidden legacy command bar is visible")
+    require(
+        not hasattr(page._surface, "toolbar_stack"),
+        "Managed editor constructed a hidden legacy command bar",
+    )
     require(window.manage_workspaces_action.shortcut().toString() == "Ctrl+O", "Ctrl+O is not workspace management")
-    require(page.engine.workspace_action.shortcut().isEmpty(), "Embedded editor still owns Ctrl+O")
+    require(page._surface.workspace_action.shortcut().isEmpty(), "Embedded editor still owns Ctrl+O")
     require(window.manage_workspaces_action.isEnabled(), "Ctrl+O is disabled while editing")
     require(window.shortcuts_action.isEnabled(), "Fuzzy shortcut search is disabled while editing")
     require(window.duplicate_action.shortcut().toString() == "Ctrl+Shift+D", "Duplicate File does not use the Plus-family shortcut")
     require(window.duplicate_line_action.shortcut().toString() == "Ctrl+D", "Duplicate Line does not use the Plus-family shortcut")
     require(window.editor_canvas_theme_action.shortcut().toString() == "Ctrl+Alt+Shift+E", "Dark Editor conflicts with List/Grid")
-    require(page.engine.duplicate_file_action.shortcut().isEmpty(), "Embedded editor still owns Duplicate File shortcut")
-    require(page.engine.duplicate_line_action.shortcut().isEmpty(), "Embedded editor still owns Duplicate Line shortcut")
+    require(page._surface.duplicate_file_action.shortcut().isEmpty(), "Embedded editor still owns Duplicate File shortcut")
+    require(page._surface.duplicate_line_action.shortcut().isEmpty(), "Embedded editor still owns Duplicate Line shortcut")
     require(window.toggle_dashboard_view_action.shortcut().toString() == "Ctrl+Alt+Shift+D", "List/Grid shortcut changed")
     require(window.refresh_action.shortcut().isEmpty(), "Refresh still conflicts with Ricopad F5")
     # Exercise the real event route, not QAction.trigger(): these bindings were
@@ -239,7 +257,7 @@ with tempfile.TemporaryDirectory(prefix="rico-plus-workspace-qa-") as raw_base:
         window.editor_manager.dashboard.view_mode() != dashboard_mode,
         "Ctrl+Alt+Shift+D did not toggle List/Grid while editing",
     )
-    original_canvas = page.engine.editor_canvas_theme
+    original_canvas = page._surface.editor_canvas_theme
     QTest.keyClick(
         page.editor,
         Qt.Key.Key_E,
@@ -249,11 +267,11 @@ with tempfile.TemporaryDirectory(prefix="rico-plus-workspace-qa-") as raw_base:
     )
     app.processEvents()
     require(
-        page.engine.editor_canvas_theme != original_canvas,
+        page._surface.editor_canvas_theme != original_canvas,
         "Ctrl+Alt+Shift+E did not toggle Dark Editor",
     )
     require(
-        [page.engine.save_action.text(), page.engine.save_new_action.text(), page.engine.save_dashboard_action.text(), page.engine.save_exit_action.text()]
+        [page._surface.save_action.text(), page._surface.save_new_action.text(), page._surface.save_dashboard_action.text(), page._surface.save_exit_action.text()]
         == ["Save", "Save and New", "Save and Dashboard", "Save and Exit"],
         "Save workflow inventory changed",
     )
@@ -287,6 +305,53 @@ with tempfile.TemporaryDirectory(prefix="rico-plus-workspace-qa-") as raw_base:
     require(not page.document.dirty, "Ribbon Save left the sidebar stuck on edited")
     require("edited" not in window.navigation._document_label(page.document), "Ribbon Save did not refresh the sidebar label")
 
+    # exp8: external disk changes must reach the live page, and the warning
+    # must not depend on the optional file header.  Emit the same repository
+    # notification the watcher produces after updating scanner metadata.
+    page.set_header_visible(False)
+    original_disk = page.document.path.read_bytes()
+    changed_disk = original_disk + b"\n"
+    page.document.path.write_bytes(changed_disk)
+    info = page.document.path.stat()
+    page.document.modified = info.st_mtime
+    page.document.size = info.st_size
+    window.repository.document_changed.emit(page.document)
+    app.processEvents()
+    require(page.external_banner.isVisible(), "External-change warning did not appear")
+    require(not page.title_label.isVisible(), "External-change test unexpectedly restored File Header")
+    external_original = page.document.path
+    preserved_version = workspace / "Externally Changed - Rico Version.rtf"
+
+    # exp8-r1: the preservation branch must never be able to overwrite the
+    # externally changed source path.  Cancelling/choosing that source leaves
+    # the warning active and the external bytes untouched.
+    with patch(
+        "rico_plus.widgets.rtf_editor.QFileDialog.getSaveFileName",
+        return_value=(str(external_original), "Rich Text Format (*.rtf)"),
+    ), patch("rico_plus.widgets.rtf_editor.QMessageBox.warning"):
+        require(
+            not page._save_editor_version_as(),
+            "Save Version As accepted the externally changed source path",
+        )
+    require(page.external_banner.isVisible(), "Rejected Save Version As dismissed warning")
+    require(external_original.read_bytes() == changed_disk, "Rejected Save Version As changed external work")
+
+    with patch(
+        "rico_plus.widgets.rtf_editor.QFileDialog.getSaveFileName",
+        return_value=(str(preserved_version), "Rich Text Format (*.rtf)"),
+    ):
+        require(page._save_editor_version_as(), "Save Version As failed")
+    app.processEvents()
+    require(not page.external_banner.isVisible(), "Save Version As did not dismiss external warning")
+    require(external_original.read_bytes() == changed_disk, "Save Version As overwrote external work")
+    require(preserved_version.is_file(), "Save Version As did not create the preserved Rico version")
+    require(page.document.path == preserved_version, "Editor did not rebind to preserved Rico version")
+    created = preserved_version
+    page.set_header_visible(bool(config.get("show_file_header", True)))
+
+    end_cursor = page.editor.textCursor()
+    end_cursor.movePosition(QTextCursor.MoveOperation.End)
+    page.editor.setTextCursor(end_cursor)
     window.editor_manager.show_dashboard()
     require(
         window.shell_ribbon.isVisible(),
@@ -303,23 +368,28 @@ with tempfile.TemporaryDirectory(prefix="rico-plus-workspace-qa-") as raw_base:
     card = window.editor_manager.dashboard._list_cards[created]
     require(card.edit_button.text() == "Open" and card.view_only_button.text() == "View Only", "Dashboard actions changed")
     view_page = window.editor_manager.open_document(created, view_only=True)
-    require(view_page is page and page.view_only and page.editor.isReadOnly(), "Lock Editor did not protect the editor")
-    require(bool(config.get("lock_editor", False)), "Lock Editor state was not persisted")
+    require(view_page is page and page.view_only and page.editor.isReadOnly(), "Locked Mode did not protect the editor")
+    require(page.editor.textCursor().position() == 0, "Locked Mode did not open the document at the top")
+    require(page.editor.verticalScrollBar().value() == page.editor.verticalScrollBar().minimum(), "Locked Mode viewport did not reset to the top")
+    window._update_window_title()
+    require(window.windowTitle().endswith(" — Locked Mode"), "Locked Mode warning is missing from the Plus window title")
+    require(bool(config.get("lock_editor", False)), "Locked Mode state was not persisted")
     window.editor_manager.set_lock_editor(False)
-    require(not page.view_only and not bool(config.get("lock_editor", False)), "Lock Editor did not clear application-wide")
+    window._update_window_title()
+    require(not window.windowTitle().endswith(" — Locked Mode"), "Locked Mode warning remained after unlocking")
+    require(not page.view_only and not bool(config.get("lock_editor", False)), "Locked Mode did not clear application-wide")
 
     managed_copy = workspace / "Managed Copy.rtf"
     with patch(
         "rico_plus.widgets.rtf_editor.QFileDialog.getSaveFileName",
         return_value=(str(managed_copy), "Rich Text Format (*.rtf)"),
     ):
-        require(page.engine.save_as_file(), "Managed Save As failed")
+        require(page._surface.save_as_file(), "Managed Save As failed")
     require(page.document.path == managed_copy and not page.document.external, "Managed Save As did not rebind")
     require(created.exists(), "Managed Save As removed the source file")
 
-    template = (PROJECT / "rico_plus/assets/templates/default-document.rtf").read_bytes()
     external = outside / "Outside.rtf"
-    external.write_bytes(template)
+    external.write_bytes(build_new_document_rtf_from_config(config.path.parent))
     window.queue_open_path(external)
     wait(300)
     external_document = window.repository.get(external)
@@ -337,7 +407,7 @@ with tempfile.TemporaryDirectory(prefix="rico-plus-workspace-qa-") as raw_base:
         "rico_plus.widgets.rtf_editor.QFileDialog.getSaveFileName",
         return_value=(str(imported), "Rich Text Format (*.rtf)"),
     ):
-        require(external_page.engine.save_as_file(), "External-to-workspace Save As failed")
+        require(external_page._surface.save_as_file(), "External-to-workspace Save As failed")
     require(window.repository.get(external) is None and external.exists(), "External source/session lifecycle is wrong")
     require(external_page.document.path == imported and not external_page.document.external, "External Save As did not become managed")
 

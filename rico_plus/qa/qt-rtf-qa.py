@@ -14,11 +14,11 @@ from PyQt6.QtCore import QBuffer, QByteArray, QEvent, QIODevice, QMimeData, Qt, 
 from PyQt6.QtGui import QBrush, QColor, QFont, QImage, QKeyEvent, QTextBlockFormat, QTextCharFormat, QTextCursor, QTextDocument, QTextFormat, QTextImageFormat, QTextListFormat
 from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
 from rico_plus.rtf_codec import document_to_rtf, decode_rtf, _rtf_clear_automatic_foreground, populate_qtextdocument_from_rtf_model, RTF_TABLE_AUTOFIT_PROPERTY, RTF_AUTOMATIC_CONTRAST_PROPERTY
+from rico_plus.services.rtf_new_document import NewDocumentDefaults, build_new_document_rtf_payload
 
 app = QApplication.instance() or QApplication(['rico-plus-qt-rtf-qa'])
 from rico_plus.widgets import rtf_editor as rtf_editor_module
-from rico_plus.widgets.rtf_editor import OPEN_WINDOWS, RICOPAD_INLINE_RICH_MIME, RtfEditorWindow, RichTextEdit
-rtf_editor_module.SMOKE_TEST_MODE = True
+from rico_plus.widgets.rtf_editor import RICOPAD_INLINE_RICH_MIME, RicopadEditorWidget, RichTextEdit
 rtf_editor_module.platform_config_locations = lambda: (QA_STATE.name, ())
 
 def require(value, message):
@@ -49,7 +49,32 @@ require(b'\\cf' not in payload, 'plain document acquired explicit foreground col
 require(b'\\highlight' not in payload, 'plain document acquired explicit highlight')
 require(reopen(payload).toPlainText() == 'Plain\nSecond', 'plain paragraph round trip failed')
 
-# Heading-first RtfEditorWindow documents must preserve the document baseline rather
+# Workspace New File serialises a blank Ricopad document before opening it.
+# Blank paragraphs have no text run, so the importer must retain both their
+# paragraph defaults and their insertion/typing format. This is the exact path
+# that exp4 failed: font family/size survived via the document baseline while
+# alignment and line spacing fell back to Left/1.0.
+new_defaults = NewDocumentDefaults(
+    font_family='Liberation Serif',
+    font_size=18,
+    font_weight='bold',
+    font_slant='italic',
+    line_spacing=150,
+    alignment='centre',
+)
+new_payload = build_new_document_rtf_payload(new_defaults)
+new_doc = reopen(new_payload)
+new_block = new_doc.begin()
+new_block_format = new_block.blockFormat()
+require(bool(new_block_format.alignment() & Qt.AlignmentFlag.AlignHCenter), 'blank New Document alignment was lost on reopen')
+require(round(new_block_format.lineHeight()) == 150, f'blank New Document line spacing was lost on reopen: {new_block_format.lineHeight()}')
+new_cursor = QTextCursor(new_block)
+new_char = new_cursor.blockCharFormat()
+require(int(new_char.fontWeight()) >= int(QFont.Weight.Bold), 'blank New Document bold typing default was lost on reopen')
+require(new_char.fontItalic(), 'blank New Document italic typing default was lost on reopen')
+require(abs(new_doc.defaultFont().pointSizeF() - 18.0) < 0.01, 'blank New Document font size was lost on reopen')
+
+# Heading-first Rico Plus documents must preserve the document baseline rather
 # than promoting Heading 1's 24 pt run to the default after reopen.
 doc = QTextDocument(); base = QFont('Adwaita Mono', 14); doc.setDefaultFont(base); c = QTextCursor(doc)
 heading = QTextCharFormat(); heading.setFontFamily('Adwaita Mono'); heading.setFontPointSize(24); heading.setFontWeight(QFont.Weight.Bold); c.insertText('Heading', heading); c.insertBlock(); body = QTextCharFormat(); body.setFontFamily('Adwaita Mono'); body.setFontPointSize(14); c.insertText('Body', body)
@@ -135,12 +160,12 @@ payload = document_to_rtf(doc); require(br'\li1200' in payload, 'QTextBlockForma
 # The real Indent/Outdent command writes normal paragraphs as RTF geometry and
 # list paragraphs as semantic QTextList levels, without changing unselected
 # siblings.  Both forms must survive two save/reopen cycles.
-indent_window = RtfEditorWindow(); editor = indent_window.visual_editor; editor.clear(); editor.setPlainText('Normal paragraph'); editor.setTextCursor(QTextCursor(editor.document().begin())); indent_window.change_indent(1)
+indent_surface = RicopadEditorWidget(); editor = indent_surface.visual_editor; editor.clear(); editor.setPlainText('Normal paragraph'); editor.setTextCursor(QTextCursor(editor.document().begin())); indent_surface.change_indent(1)
 indent_step = float(editor.document().indentWidth()); normal_block = editor.document().begin(); require(normal_block.blockFormat().indent() == 0 and abs(normal_block.blockFormat().leftMargin() - indent_step) < 0.01, 'Indent did not create serializable paragraph geometry')
 normal_payload = document_to_rtf(editor.document()); normal_reopen = reopen(normal_payload); normal_second = reopen(document_to_rtf(normal_reopen)); require(abs(normal_reopen.begin().blockFormat().leftMargin() - indent_step) < 0.01 and block_snapshot(normal_reopen) == block_snapshot(normal_second), 'normal paragraph indent drifted across RTF cycles')
 
 editor.clear(); c = editor.textCursor(); c.insertText('Parent one'); lf = QTextListFormat(); lf.setStyle(QTextListFormat.Style.ListDisc); lf.setIndent(1); c.createList(lf); c.insertBlock(); c.insertText('Nested target'); c.insertBlock(); c.insertText('Parent two')
-middle = editor.document().findBlockByNumber(1); editor.setTextCursor(QTextCursor(middle)); indent_window.change_indent(1)
+middle = editor.document().findBlockByNumber(1); editor.setTextCursor(QTextCursor(middle)); indent_surface.change_indent(1)
 list_blocks = [editor.document().findBlockByNumber(i) for i in range(3)]
 levels = [block.textList().format().indent() if block.textList() is not None else 0 for block in list_blocks]
 list_ids = [block.textList().objectIndex() if block.textList() is not None else -1 for block in list_blocks]
@@ -155,14 +180,14 @@ for candidate in (list_reopen, list_second):
     require(reopened_levels == [1, 2, 1], f'list levels changed across RTF cycles: {reopened_levels!r}')
     reopened_ids = [candidate.findBlockByNumber(i).textList().objectIndex() for i in range(3)]
     require(reopened_ids[0] == reopened_ids[2] != reopened_ids[1], f'nested list split its resumed parent list: {reopened_ids!r}')
-editor.setTextCursor(QTextCursor(editor.document().findBlockByNumber(1))); indent_window.change_indent(-1)
+editor.setTextCursor(QTextCursor(editor.document().findBlockByNumber(1))); indent_surface.change_indent(-1)
 outdented = [editor.document().findBlockByNumber(i) for i in range(3)]; outdent_ids = [block.textList().objectIndex() for block in outdented]
 require([block.textList().format().indent() for block in outdented] == [1, 1, 1] and len(set(outdent_ids)) == 1, 'Outdent did not rejoin the adjacent parent list')
-group_cursor = QTextCursor(editor.document()); group_cursor.setPosition(outdented[1].position()); group_cursor.setPosition(outdented[2].position() + outdented[2].length() - 1, QTextCursor.MoveMode.KeepAnchor); editor.setTextCursor(group_cursor); indent_window.change_indent(1)
+group_cursor = QTextCursor(editor.document()); group_cursor.setPosition(outdented[1].position()); group_cursor.setPosition(outdented[2].position() + outdented[2].length() - 1, QTextCursor.MoveMode.KeepAnchor); editor.setTextCursor(group_cursor); indent_surface.change_indent(1)
 grouped = [editor.document().findBlockByNumber(i) for i in range(3)]; grouped_ids = [block.textList().objectIndex() for block in grouped]
 require([block.textList().format().indent() for block in grouped] == [1, 2, 2] and grouped_ids[1] == grouped_ids[2] != grouped_ids[0], 'multi-paragraph list indent did not keep selected items together')
 
-# RtfEditorWindow-internal single-paragraph rich clipboard data must paste inline, not
+# RicopadEditorWidget single-paragraph rich clipboard data must paste inline, not
 # acquire the outer <p> block wrapper generated by Qt's HTML clipboard format.
 editor = RichTextEdit(); editor.setPlainText('Before after'); c = editor.textCursor(); c.setPosition(len('Before ')); editor.setTextCursor(c)
 mime = QMimeData(); mime.setText('THIS'); mime.setHtml('<p><span style="font-weight:700">THIS</span></p>'); mime.setData(RICOPAD_INLINE_RICH_MIME, QByteArray(b'1')); editor.insertFromMimeData(mime)
@@ -205,11 +230,11 @@ for token in (br'\clpadfl3\clpadl28', br'\clpadft3\clpadt28', br'\clpadfb3\clpad
     require(token in foreign_lists_out, f'LibreOffice table cell geometry/padding lost {token!r}')
 require(br'\trgaph108' not in foreign_lists_out, 'LibreOffice table acquired synthetic 108-twip row gap')
 
-# RtfEditorWindow-created auto-fit tables stay auto-fit across save/reopen instead of
+# RicopadEditorWidget-created auto-fit tables stay auto-fit across save/reopen instead of
 # expanding to percentage-constrained full-width tables.
 doc = QTextDocument(); c=QTextCursor(doc); from PyQt6.QtGui import QTextTableFormat
 tf=QTextTableFormat(); tf.setProperty(RTF_TABLE_AUTOFIT_PROPERTY,True); table=c.insertTable(2,2,tf); table.cellAt(0,0).firstCursorPosition().insertText('A'); table.cellAt(0,1).firstCursorPosition().insertText('B')
-payload=document_to_rtf(doc); require(br'\trautofit1' in payload,'auto-fit table marker missing'); require(br'\cellx2700\cellx5400' in payload,'RtfEditorWindow-created auto-fit table retained page-width default geometry'); require(br'\trgaph108' not in payload,'auto-fit table acquired synthetic 108-twip gap'); auto_doc=reopen(payload); auto_table=QTextCursor(auto_doc.begin()).currentTable()
+payload=document_to_rtf(doc); require(br'\trautofit1' in payload,'auto-fit table marker missing'); require(br'\cellx2700\cellx5400' in payload,'auto-fit table retained page-width default geometry'); require(br'\trgaph108' not in payload,'auto-fit table acquired synthetic 108-twip gap'); auto_doc=reopen(payload); auto_table=QTextCursor(auto_doc.begin()).currentTable()
 if auto_table is None:
     probe=auto_doc.begin()
     while probe.isValid() and auto_table is None:
@@ -290,7 +315,7 @@ reopened = reopen(payload); payload2 = document_to_rtf(reopened); require(br'\jp
 messages = []
 old_save_dialog = QFileDialog.getSaveFileName
 old_critical, old_warning, old_information, old_question = QMessageBox.critical, QMessageBox.warning, QMessageBox.information, QMessageBox.question
-virgin_windows = []
+surfaces = []
 try:
     with tempfile.TemporaryDirectory(prefix='ricopad-virgin-save-') as temp_dir:
         requested_path = pathlib.Path(temp_dir) / 'virgin-document'
@@ -301,21 +326,21 @@ try:
         QMessageBox.critical = lambda *args, **kwargs: messages.append(('critical', args[1:])) or QMessageBox.StandardButton.Cancel
         QMessageBox.warning = lambda *args, **kwargs: messages.append(('warning', args[1:])) or QMessageBox.StandardButton.Cancel
         QMessageBox.information = lambda *args, **kwargs: messages.append(('information', args[1:])) or QMessageBox.StandardButton.Cancel
-        virgin = RtfEditorWindow(); virgin_windows.append(virgin)
+        virgin = RicopadEditorWidget(); surfaces.append(virgin)
         require(virgin.visual_editor.toPlainText() == '' and virgin.file_path is None, 'virgin-file QA did not start blank and untitled')
-        require(not virgin.visual_editor.document().isModified() and virgin.content_saved and not virgin.windowTitle().startswith('*'), 'untouched startup was incorrectly marked modified')
+        require(not virgin.visual_editor.document().isModified() and virgin.content_saved and virgin.editor_title == 'Untitled.rtf', 'untouched component startup was incorrectly marked modified')
         app.processEvents()
         require(not virgin.visual_editor.document().isModified() and virgin.content_saved, 'untouched startup became modified after event processing')
         questions = []
         QMessageBox.question = lambda *args, **kwargs: questions.append(args[2]) or QMessageBox.StandardButton.Cancel
         require(virgin.check_save_changes() and not questions, 'untouched startup invoked the save-changes question')
         cursor = virgin.visual_editor.textCursor(); cursor.insertText('User edit'); virgin.visual_editor.setTextCursor(cursor)
-        require(virgin.visual_editor.document().isModified() and not virgin.content_saved and virgin.windowTitle().startswith('*'), 'first genuine user edit did not mark the document modified')
+        require(virgin.visual_editor.document().isModified() and not virgin.content_saved, 'first genuine user edit did not mark the document modified')
         require(not virgin.check_save_changes() and questions == ['Do you want to save changes?'], 'modified document did not invoke the normal save-changes question')
         QMessageBox.question = lambda *args, **kwargs: QMessageBox.StandardButton.Discard
         require(virgin.new_file(), 'File -> New failed after discarding the lifecycle probe edit')
-        require(virgin.visual_editor.toPlainText() == '' and not virgin.visual_editor.document().isModified() and virgin.content_saved and not virgin.windowTitle().startswith('*'), 'File -> New did not restore a clean Untitled document')
-        failed_open = RtfEditorWindow(str(invalid_path)); virgin_windows.append(failed_open)
+        require(virgin.visual_editor.toPlainText() == '' and not virgin.visual_editor.document().isModified() and virgin.content_saved and virgin.editor_title == 'Untitled.rtf', 'File -> New did not restore a clean Untitled document')
+        failed_open = RicopadEditorWidget(str(invalid_path)); surfaces.append(failed_open)
         require(messages and messages[-1][0] == 'warning' and 'does not begin with an RTF header' in str(messages[-1][1]), 'invalid startup RTF did not report its import error')
         messages.clear()
         questions.clear()
@@ -324,7 +349,7 @@ try:
         require(failed_open.check_save_changes() and not questions, 'failed startup import left a spurious save prompt')
         require(virgin.save_as_file(), f'virgin Save As failed: {messages!r}')
         require(saved_path.is_file() and saved_path.read_bytes().startswith(b'{\\rtf1'), 'virgin Save As did not create a recognizable RTF file')
-        reader = RtfEditorWindow(); virgin_windows.append(reader)
+        reader = RicopadEditorWidget(); surfaces.append(reader)
         require(reader.load_file(str(saved_path), check_changes=False, show_error=True), f'virgin saved file would not reopen: {messages!r}')
         require(reader.visual_editor.toPlainText() == '' and reader.save_file(check_external_change=False), f'virgin reopen/resave changed or failed: {messages!r}')
         require(reopen(saved_path.read_bytes()).toPlainText() == '', 'virgin reopen/resave payload is not an empty RTF document')
@@ -333,9 +358,10 @@ finally:
     QFileDialog.getSaveFileName = old_save_dialog
     QMessageBox.critical, QMessageBox.warning, QMessageBox.information = old_critical, old_warning, old_information
     QMessageBox.question = old_question
-    for window in virgin_windows + [indent_window]:
-        if window in OPEN_WINDOWS:
-            window._skip_close_save_prompt = True; window.close()
+    for surface in surfaces + [indent_surface]:
+        surface._skip_close_save_prompt = True
+        surface.close()
+        surface.deleteLater()
     app.processEvents(); QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete); app.processEvents()
 
 print('PASS: Qt-backed RTF save/round-trip QA (document-default stability, list spaces/levels, virgin first-save, auto-fit tables, NoBrush, paragraph cycles, LibreOffice fidelity, images)')
