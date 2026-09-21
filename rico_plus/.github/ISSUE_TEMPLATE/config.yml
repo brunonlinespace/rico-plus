@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security report
+    url: https://github.com/brunonlinespace/rico-plus/security
+    about: Read SECURITY.md and contact the maintainer privately for vulnerabilities.

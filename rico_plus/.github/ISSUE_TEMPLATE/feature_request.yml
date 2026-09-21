@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest a focused improvement to Rico Plus
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Workflow problem
+      description: Describe the real task or friction this feature would solve.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Current workaround or alternatives
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and compatibility considerations
+      description: Note any impact on large workspaces, AppImage, drag-and-drop, or desktop environments.
