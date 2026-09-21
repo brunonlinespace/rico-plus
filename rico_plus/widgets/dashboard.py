@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QScroller,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -383,6 +384,12 @@ class DashboardWidget(QWidget):
         self.scroll.setWidgetResizable(True)
         self.scroll.setAlignment(
             Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
+        )
+        # Suite Pythoine dashboard contract: let Qt arbitrate stationary taps
+        # versus finger drags, and use drags for kinetic scrolling/panning.
+        QScroller.grabGesture(
+            self.scroll.viewport(),
+            QScroller.ScrollerGestureType.TouchGesture,
         )
 
         self.view_stack = CurrentPageStack(self.scroll)

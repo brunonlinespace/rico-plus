@@ -20,7 +20,7 @@ from PyQt6.QtGui import (
     QDrag, QDragEnterEvent, QDragMoveEvent, QDropEvent, QKeyEvent, QPainter,
 )
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QFrame, QHBoxLayout, QLabel, QPushButton, QTreeWidget,
+    QAbstractItemView, QFrame, QHBoxLayout, QHeaderView, QLabel, QPushButton, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget, QSizePolicy,
 )
 
@@ -364,6 +364,14 @@ class NavigationWidget(QFrame):
 
         self.tree = NavigationTree(self)
         self.tree.setHeaderHidden(True)
+        # Preserve the real width of long workspace paths instead of forcing
+        # the sole tree column to the sidebar viewport.  This restores native
+        # horizontal overflow/scrolling for deeply nested folders and files.
+        self.tree.header().setStretchLastSection(False)
+        self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.tree.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.tree.setTextElideMode(Qt.TextElideMode.ElideNone)
         self.tree.setIndentation(18)
         self.tree.setRootIsDecorated(True)
         self.tree.setItemsExpandable(True)

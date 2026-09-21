@@ -5,12 +5,11 @@
 #
 # GPLv3-or-later
 #
-# Version: 0.0.2
+# Version: 0.0.3
 # ==============================================================================
 
 import base64
 import html
-import re
 import json
 import hashlib
 import locale
@@ -50,17 +49,13 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QInputDialog,
-    QMainWindow,
     QMenu,
     QMessageBox,
     QPushButton,
     QTextEdit,
-    QStyleFactory,
     QSizePolicy,
     QSpinBox,
-    QScrollArea,
-    QScroller,
-    QTabWidget,
+    QStatusBar,
     QTableWidget,
     QTableWidgetItem,
     QToolButton,
@@ -72,6 +67,9 @@ from PyQt6.QtWidgets import (
 )
 
 from rico_plus.rich_text_support import is_safe_link_target, sanitise_qt_html
+from rico_plus.services.rtf_new_document import (
+    NewDocumentDefaults, build_new_document_rtf_payload,
+)
 from rico_plus.rtf_codec import (
     _qt_brush_colour, _rtf_clear_automatic_foreground,
     decode_rtf, document_to_rtf_with_properties, populate_qtextdocument_from_rtf_model,
@@ -81,7 +79,7 @@ from rico_plus.rtf_codec import (
 )
 
 APP_NAME = "Rico Plus"
-APP_VERSION = "0.0.2"
+APP_VERSION = "0.0.3"
 RIBBON_BUTTON_SIZE = 52
 RIBBON_ICON_SIZE = 32
 RIBBON_FONT_FAMILY_WIDTH = RIBBON_BUTTON_SIZE * 2
@@ -102,22 +100,11 @@ MAX_EMBEDDED_IMAGE_SIZE = 12 * 1024 * 1024
 MAX_IMAGE_SOURCE_SIZE = 48 * 1024 * 1024
 MAX_IMAGE_PIXELS = 40_000_000
 RTF_EXTENSIONS = {".rtf"}
-_SMOKE_TEST_ARGUMENTS = {"--ricopad-smoke-test"}
-_FORMAT_PARITY_ARGUMENTS = {"--ricopad-format-parity-probe"}
-SMOKE_TEST_MODE = any(argument in _SMOKE_TEST_ARGUMENTS for argument in sys.argv[1:])
-FORMAT_PARITY_PROBE_MODE = any(argument in _FORMAT_PARITY_ARGUMENTS for argument in sys.argv[1:])
-# Consume Rico Plus's private test switches before QApplication sees filenames.
-sys.argv[:] = [argument for argument in sys.argv if argument not in (_SMOKE_TEST_ARGUMENTS | _FORMAT_PARITY_ARGUMENTS)]
 DOCUMENT_EXTENSIONS = RTF_EXTENSIONS
 IMAGE_EXTENSIONS = {".bmp", ".gif", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
 GITHUB_URL = "https://github.com/brunonlinespace/rico-plus"
 ISSUES_URL = GITHUB_URL + "/issues"
 
-# Strong references to every open top-level editor window. This registry is
-# independent of whichever window created another one, so closing a parent or
-# intermediate window cannot cause another open document to be garbage
-# collected without receiving its normal close/save prompt.
-OPEN_WINDOWS = set()
 
 
 def read_bounded_bytes(file_path, limit, *, label="file"):
@@ -158,12 +145,6 @@ def preference_text(data, key, default, *, limit=512):
     return value[:limit]
 
 
-def register_window(window):
-    """Keep a top-level editor alive until Qt destroys that exact window."""
-    OPEN_WINDOWS.add(window)
-    window.destroyed.connect(
-        lambda _object=None, registered=window: OPEN_WINDOWS.discard(registered)
-    )
 
 
 def normalise_windows_organisation_directory(appdata):
@@ -663,46 +644,6 @@ class RichTextEdit(QTextEdit):
         super().wheelEvent(event)
 
 
-class RibbonScrollArea(QScrollArea):
-    """Horizontally pannable Ribbon surface without swallowing taps.
-
-    QScroller owns the touch gesture arbitration: a finger drag scrolls after
-    Qt's platform drag threshold, while a stationary tap is delivered to the
-    child button/selector normally. Mouse wheel horizontal panning is retained.
-    """
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.viewport().setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents, True)
-        QScroller.grabGesture(
-            self.viewport(), QScroller.ScrollerGestureType.TouchGesture
-        )
-
-    def pan_from_wheel_event(self, event):
-        """Translate a wheel event into horizontal movement when possible."""
-        bar = self.horizontalScrollBar()
-        if bar.maximum() <= bar.minimum():
-            return False
-        pixel_delta = event.pixelDelta()
-        angle_delta = event.angleDelta()
-        delta = pixel_delta.y() or pixel_delta.x()
-        if not delta:
-            delta = angle_delta.y() or angle_delta.x()
-            if delta:
-                notches = int(delta / 120)
-                if notches == 0:
-                    notches = 1 if delta > 0 else -1
-                delta = notches * max(48, bar.singleStep() * 3)
-        if not delta:
-            return False
-        bar.setValue(bar.value() - int(delta))
-        event.accept()
-        return True
-
-    def wheelEvent(self, event):
-        if self.pan_from_wheel_event(event):
-            return
-        super().wheelEvent(event)
 
 
 class _EmbeddedMenuRegistry:
@@ -730,7 +671,23 @@ class _EmbeddedMenuRegistry:
         return
 
 
-class RtfEditorWindow(QMainWindow):
+# The retired standalone/embedded RtfEditorWindow implementation was removed in
+# 0.0.3-exp6-r3. Rico Plus has one live rich-text host only:
+# MainWindow -> EditorPage -> RicopadEditorWidget(QWidget).
+
+
+# ============================================================================
+# Extracted Ricopad editor component for Plus-family hosting
+# ============================================================================
+
+class RicopadEditorWidget(QWidget):
+    """Ricopad's rich-text editor hosted as a real QWidget component.
+
+    The component owns document/RTF/editing semantics. Rico Plus owns all
+    application chrome (MainWindow, AppMenu, Ribbon, workspace and window title).
+    No QMainWindow compatibility API and no hidden Ricopad Ribbon/menu bar are
+    constructed on the managed-document path.
+    """
 
     new_requested = pyqtSignal()
     workspace_requested = pyqtSignal()
@@ -746,20 +703,14 @@ class RtfEditorWindow(QMainWindow):
     duplicate_requested = pyqtSignal()
     file_path_changed = pyqtSignal(str, str)
     files_dropped = pyqtSignal(object)
+    status_message = pyqtSignal(str)
 
-    def __init__(self, initial_file=None, *, config_directory=None, embedded=False, parent=None):
-        super().__init__(parent)
-        self.embedded = bool(embedded)
-        if self.embedded:
-            # QMainWindow keeps the Qt.Window flag even when constructed with
-            # a parent.  In the workspace shell that makes the editor a hidden
-            # top-level window instead of a child of EditorPage, leaving only
-            # an empty central pane.  Force ordinary child-widget semantics
-            # before the editor UI is built and inserted into the page layout.
-            self.setWindowFlags(Qt.WindowType.Widget)
-        else:
-            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-            register_window(self)
+    def __init__(self, initial_file=None, *, config_directory=None, parent=None):
+        QWidget.__init__(self, parent)
+        self.setObjectName("ricopadEditorWidget")
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setAcceptDrops(True)
 
         self.file_path = None
         self.file_format = "rtf"
@@ -795,11 +746,9 @@ class RtfEditorWindow(QMainWindow):
         self._visual_document_zoom_percent = 100
         self._visual_zoom_device = None
         self._skip_close_save_prompt = False
-        # The workspace wrapper may reject a Save As target that is already
-        # open in another editor page. Standalone use leaves this unset.
         self.save_as_target_validator = None
 
-        default_config_directory, self.config_import_candidates = platform_config_locations()
+        default_config_directory, _import_candidates = platform_config_locations()
         self.config_directory = os.fspath(config_directory or default_config_directory)
         self.config_import_candidates = ()
         self.config_file = os.path.join(self.config_directory, "editor.json")
@@ -808,35 +757,17 @@ class RtfEditorWindow(QMainWindow):
         self.appimage_theme_files = appimage_theme_resources()
         self.appimage_theme_available = bool(self.appimage_theme_files)
         requested_theme = os.environ.get("RICO_PLUS_APP_THEME", "").strip().lower()
-        self.appimage_theme_override = (
-            requested_theme if requested_theme in ("system", "dark", "light") else None
-        )
+        self.appimage_theme_override = requested_theme if requested_theme in ("system", "dark", "light") else None
         requested_icon_set = os.environ.get("RICO_PLUS_ICON_SET", "").strip().lower()
-        self.appimage_icon_set_override = (
-            requested_icon_set if requested_icon_set in ("classic", "new") else None
-        )
+        self.appimage_icon_set_override = requested_icon_set if requested_icon_set in ("classic", "new") else None
 
         self.load_preferences()
         self.view_only = bool(self.persist_view_only)
-        # Standalone Ricopad may own QApplication theming.  An embedded Rico
-        # Plus editor never may: the persistent Plus shell is the sole app
-        # theme owner, as required by the Plus shell ownership contract.
-        if self.appimage_theme_available and not self.embedded:
-            self.apply_appimage_theme(self.effective_appimage_theme(), update_actions=False)
-
-        self.resize(980, 680)
-        self.setMinimumSize(720, 500)
-        self.setAcceptDrops(True)
         icon_path = resource_path("icons", "ricopad.png")
         if os.path.isfile(icon_path):
             self.setWindowIcon(QIcon(icon_path))
-
         self.build_ui()
         self.bind_shortcuts()
-        # Applying new-document defaults is programmatic startup work, not a
-        # user edit.  Keep the untouched Untitled document at its clean save
-        # point; if an initial-file import fails, this is also the clean
-        # fallback document left behind.
         self._loading = True
         try:
             self.apply_preferences()
@@ -852,20 +783,170 @@ class RtfEditorWindow(QMainWindow):
 
         if initial_file:
             self.load_file(initial_file, check_changes=False)
+        QTimer.singleShot(0, self._focus_editor_after_startup)
 
-        if not self.embedded and not self.tutorial_seen and not (SMOKE_TEST_MODE or FORMAT_PARITY_PROBE_MODE):
-            self.tutorial_seen = True
-            self.save_preferences()
-            QTimer.singleShot(0, self.show_tutorial_wizard)
+    def build_ui(self):
+        """Build only Ricopad's editor component; application chrome belongs to Rico Plus."""
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.setSpacing(0)
+
+        # Construct Ricopad's authoritative QActions/QMenus as command objects only.
+        # No QMenuBar, QMainWindow, Ricopad Ribbon or standalone toolbar is created.
+        self.app_menu_bar = _EmbeddedMenuRegistry()
+        self.make_file_menu(); self.make_edit_menu(); self.make_format_menu()
+        self.make_insert_menu(); self.make_view_menu(); self.make_help_menu()
+
+        # The Find Bar is genuine editor UI and remains inside the editor component.
+        self.search_container = QWidget(self)
+        self.search_container.setObjectName("searchContainer")
+        self.search_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        search_layout = QHBoxLayout(self.search_container)
+        search_layout.setContentsMargins(0, 0, 0, 0)
+        search_layout.setSpacing(6)
+        self.search_entry = QLineEdit(self.search_container); self.search_entry.setPlaceholderText("Find text")
+        self.search_entry.returnPressed.connect(self.find_next); self.search_entry.textChanged.connect(self.on_search_text_changed)
+        self.search_button = QPushButton(self.search_container); self.bind_custom_icon(self.search_button, "find"); self.search_button.setToolTip("Highlight all matches"); self.search_button.setFocusPolicy(Qt.FocusPolicy.NoFocus); self.search_button.clicked.connect(self.find_text_and_refocus)
+        self.search_count_label = QLabel("0/0", self.search_container); self.search_count_label.setMinimumWidth(42); self.search_count_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.search_previous_button = QToolButton(self.search_container); self.bind_custom_icon(self.search_previous_button, "previous"); self.search_previous_button.setToolTip("Previous Match (Shift+F3)"); self.search_previous_button.setShortcut(QKeySequence("Shift+F3")); self.search_previous_button.setFocusPolicy(Qt.FocusPolicy.NoFocus); self.search_previous_button.clicked.connect(self.find_previous)
+        self.search_next_button = QToolButton(self.search_container); self.bind_custom_icon(self.search_next_button, "next"); self.search_next_button.setToolTip("Next Match (F3)"); self.search_next_button.setShortcut(QKeySequence("F3")); self.search_next_button.setFocusPolicy(Qt.FocusPolicy.NoFocus); self.search_next_button.clicked.connect(self.find_next)
+        search_layout.addWidget(self.search_entry, 1); search_layout.addWidget(self.search_button); search_layout.addWidget(self.search_count_label); search_layout.addWidget(self.search_previous_button); search_layout.addWidget(self.search_next_button)
+        self.main_layout.addWidget(self.search_container, 0)
+
+        # Ricopad formatting-state widgets are retained as editor state/control objects.
+        # They are not a second toolbar: Rico Plus presents them through ShellRibbon.
+        self.format_controls = QWidget(self)
+        self.format_controls.hide()
+        self.format_toolbar = self.format_controls
+        self.font_combo = QFontComboBox(self.format_controls); self.font_combo.setEditable(True); self.font_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        if self.font_combo.lineEdit() is not None:
+            e = self.font_combo.lineEdit(); e.setReadOnly(True); e.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.font_combo.currentTextChanged.connect(self._reset_font_face_display); self.font_combo.currentFontChanged.connect(self.set_selected_font); self.font_combo.currentFontChanged.connect(lambda _font:self._reset_font_face_display())
+        self.font_size_combo = QComboBox(self.format_controls); self.font_size_combo.setEditable(True); self.font_size_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert); self.font_size_combo.addItems(["8","9","10","11","12","14","16","18","20","24","28","32","36","48","72"]); self.font_size_combo.currentTextChanged.connect(self.set_selected_font_size)
+        self.font_weight_combo = QComboBox(self.format_controls)
+        for text, weight in (("Thin",QFont.Weight.Thin),("Extra Light",QFont.Weight.ExtraLight),("Light",QFont.Weight.Light),("Regular",QFont.Weight.Normal),("Medium",QFont.Weight.Medium),("Demi Bold",QFont.Weight.DemiBold),("Bold",QFont.Weight.Bold),("Extra Bold",QFont.Weight.ExtraBold),("Black",QFont.Weight.Black)):
+            self.font_weight_combo.addItem(text, int(weight))
+        self.font_weight_combo.currentIndexChanged.connect(self.apply_font_weight_from_combo)
+        self.heading_combo = QComboBox(self.format_controls)
+        for text, level in (("Normal",0),("Heading 1",1),("Heading 2",2),("Heading 3",3),("Heading 4",4),("Heading 5",5),("Heading 6",6)):
+            self.heading_combo.addItem(text, level)
+        self.heading_combo.currentIndexChanged.connect(self.apply_heading_from_combo)
+        self.line_spacing_combo = QComboBox(self.format_controls)
+        for label, value in (("1",100),("1.15",115),("1.5",150),("2",200)):
+            self.line_spacing_combo.addItem(label, value)
+        self.line_spacing_combo.currentIndexChanged.connect(self.apply_line_spacing_from_combo)
+
+        def state_button(callback, *, checkable=False):
+            button = QToolButton(self.format_controls); button.setCheckable(checkable); button.clicked.connect(callback); return button
+        self.bold_button = state_button(self.toggle_bold, checkable=True)
+        self.italic_button = state_button(self.toggle_italic, checkable=True)
+        self.underline_button = state_button(self.toggle_underline, checkable=True)
+        self.strike_button = state_button(self.toggle_strikethrough, checkable=True)
+        self.text_colour_button = state_button(self.choose_text_colour)
+        self.highlight_button = state_button(self.choose_highlight_colour)
+        self.align_left_button = state_button(lambda:self.set_alignment(Qt.AlignmentFlag.AlignLeft), checkable=True)
+        self.align_center_button = state_button(lambda:self.set_alignment(Qt.AlignmentFlag.AlignHCenter), checkable=True)
+        self.align_right_button = state_button(lambda:self.set_alignment(Qt.AlignmentFlag.AlignRight), checkable=True)
+        self.align_justify_button = state_button(lambda:self.set_alignment(Qt.AlignmentFlag.AlignJustify), checkable=True)
+        self.bullet_button = state_button(self.toggle_bullet_list, checkable=True)
+        self.symbols_button = state_button(self.show_symbols_popup)
+        self.indent_button = state_button(lambda:self.change_indent(1))
+        self.outdent_button = state_button(lambda:self.change_indent(-1))
+        self.format_widgets.extend([self.font_combo,self.font_size_combo,self.font_weight_combo,self.heading_combo,self.line_spacing_combo,self.text_colour_button,self.highlight_button,self.bold_button,self.italic_button,self.underline_button,self.strike_button,self.align_left_button,self.align_center_button,self.align_right_button,self.align_justify_button,self.bullet_button,self.symbols_button,self.indent_button,self.outdent_button])
+
+        self.visual_editor = RichTextEdit(self)
+        self.visual_editor.setObjectName("visualEditor")
+        self.visual_editor.setAcceptRichText(True)
+        self.visual_editor.setAutoFormatting(QTextEdit.AutoFormattingFlag.AutoNone)
+        self.visual_editor.setFrameShape(QFrame.Shape.NoFrame)
+        self.visual_editor.setContentsMargins(0,0,0,0)
+        self.visual_editor.setViewportMargins(0,0,0,0)
+        self.visual_editor.setMinimumSize(0,0)
+        self.visual_editor.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.visual_editor.document().setDocumentMargin(4.0)
+        self.visual_editor.viewport().setMinimumSize(0,0)
+        self.visual_editor.viewport().installEventFilter(self)
+        self.visual_editor.currentCharFormatChanged.connect(self.update_formatting_state)
+        self.visual_editor.cursorPositionChanged.connect(self.update_formatting_state)
+        self.visual_editor.document().modificationChanged.connect(self.on_modification_changed)
+        self.visual_editor.textChanged.connect(self.on_document_text_changed)
+        self.visual_editor.installEventFilter(self)
+        self.text_area = self.visual_editor
+        self.main_layout.addWidget(self.visual_editor, 1)
+
+        # Editor-specific information stays a normal child widget, never a nested
+        # application status bar/QMainWindow surface.
+        self.app_status_bar = QStatusBar(self)
+        self.app_status_bar.setObjectName("ricopadEditorStatus")
+        self.app_status_bar.setSizeGripEnabled(False)
+
+        # Keep the persistent editor statistics geometrically stable.  Fixed
+        # fields reserve their longest supported display; the message field
+        # takes (and yields) all remaining horizontal space.  Word count is
+        # deliberately absent: rescanning the full document on every edit made
+        # multi-million-character RTF documents unnecessarily expensive.
+        self.operation_mode_label = QLabel("Insert", self.app_status_bar)
+        self.operation_mode_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        operation_width = self.operation_mode_label.fontMetrics().horizontalAdvance("Overwrite") + 4
+        self.operation_mode_label.setFixedWidth(operation_width)
+
+        self.zoom_label = QLabel("100%", self.app_status_bar)
+        zoom_width = self.zoom_label.fontMetrics().horizontalAdvance("300%") + 4
+        self.zoom_label.setFixedWidth(zoom_width)
+
+        self.counter_label = QLabel("Chars 0", self.app_status_bar)
+        maximum_counter_text = f"Chars {MAX_DOCUMENT_CHARACTERS:,}"
+        counter_width = self.counter_label.fontMetrics().horizontalAdvance(maximum_counter_text) + 4
+        self.counter_label.setFixedWidth(counter_width)
+
+        self.status_message_label = QLabel("", self.app_status_bar)
+        self.status_message_label.setMinimumWidth(0)
+        self.status_message_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
+        self.status_message_label.setToolTip("")
+
+        self._status_message_timer = QTimer(self)
+        self._status_message_timer.setSingleShot(True)
+        self._status_message_timer.timeout.connect(self._clear_status_message)
+
+        self.app_status_bar.addWidget(self.operation_mode_label)
+        self.app_status_bar.addWidget(self.zoom_label)
+        self.app_status_bar.addWidget(self.counter_label)
+        self.app_status_bar.addWidget(self.status_message_label, 1)
+        self.main_layout.addWidget(self.app_status_bar, 0)
+
+    def _clear_status_message(self):
+        self.status_message_label.clear()
+        self.status_message_label.setToolTip("")
+
+    def _show_status_message(self, message, timeout=0):
+        text = str(message)
+        self.status_message_label.setText(text)
+        self.status_message_label.setToolTip(text)
+        if int(timeout) > 0:
+            self._status_message_timer.start(int(timeout))
         else:
-            # Ribbon contains editable selectors; without an explicit post-show
-            # focus handoff Qt may choose Font Size as the first focus widget.
-            # Put the caret on the document after the event loop starts so the
-            # Ribbon launches ready to type.
-            QTimer.singleShot(0, self._focus_editor_after_startup)
+            self._status_message_timer.stop()
+        self.status_message.emit(text)
 
+    def apply_preferences(self):
+        self.apply_editor_font()
+        self.set_word_wrap_mode()
+        self.search_bar_action.setChecked(self.show_search_bar)
+        self.search_container.setVisible(self.show_search_bar)
+        self.status_bar_action.blockSignals(True)
+        self.status_bar_action.setChecked(bool(self.show_status_bar))
+        self.status_bar_action.blockSignals(False)
+        self.app_status_bar.setVisible(self.show_status_bar)
+        self._update_mode_capabilities()
+        self.apply_tab_width()
+        self.apply_zoom_preference()
 
-    # ---------- Preferences ----------
+    def update_title(self):
+        # Window titles are exclusively owned by Rico Plus MainWindow.
+        self.editor_title = os.path.basename(self.file_path) if self.file_path else "Untitled.rtf"
+
 
     def load_preferences(self):
         self.word_wrap = True
@@ -884,7 +965,6 @@ class RtfEditorWindow(QMainWindow):
         self.zoom_percent = 100
         self.tab_width_spaces = 4
         self.persist_view_only = False
-        self.ribbon_collapsed_preference = False
         self.print_header_enabled = True
         self.print_header_left = "&F"
         self.print_header_center = ""
@@ -925,7 +1005,6 @@ class RtfEditorWindow(QMainWindow):
             self.zoom_percent = max(50, min(300, int(data.get("zoom_percent", 100))))
             self.tab_width_spaces = max(1, min(16, int(data.get("tab_width_spaces", 4))))
             self.persist_view_only = preference_bool(data, "view_only", False)
-            self.ribbon_collapsed_preference = preference_bool(data, "ribbon_collapsed", False)
             saved_theme = preference_text(
                 data, "appimage_theme",
                 preference_text(data, "overall_theme", "", limit=16),
@@ -955,8 +1034,6 @@ class RtfEditorWindow(QMainWindow):
         if migrating_preferences:
             self.save_preferences()
 
-
-
     def save_preferences(self):
         data = {
             "word_wrap": self.word_wrap,
@@ -972,7 +1049,6 @@ class RtfEditorWindow(QMainWindow):
             "zoom_percent": self.zoom_percent,
             "tab_width_spaces": self.tab_width_spaces,
             "view_only": bool(self.view_only),
-            "ribbon_collapsed": bool(getattr(self, "_ribbon_collapsed", self.ribbon_collapsed_preference)),
             "print_header_enabled": self.print_header_enabled,
             "print_header_left": self.print_header_left,
             "print_header_center": self.print_header_center,
@@ -1014,347 +1090,6 @@ class RtfEditorWindow(QMainWindow):
             if temporary:
                 try: os.remove(temporary)
                 except OSError: pass
-
-
-    # ---------- UI ----------
-
-    def build_ui(self):
-        central = QWidget(self)
-        central.setObjectName("centralWidget")
-        self.setCentralWidget(central)
-        self.main_layout = QVBoxLayout(central)
-        self.main_layout.setContentsMargins(6, 6, 6, 6)
-        self.main_layout.setSpacing(6)
-
-        self.toolbar_stack = QWidget(self)
-        self.toolbar_stack.setObjectName("toolbarStack")
-        self.toolbar_stack_layout = QVBoxLayout(self.toolbar_stack)
-        self.toolbar_stack_layout.setContentsMargins(0, 0, 0, 0)
-        self.toolbar_stack_layout.setSpacing(6)
-        self.toolbar = QWidget(self.toolbar_stack)
-        self.toolbar.setObjectName("toolbar")
-        self.toolbar_layout = QHBoxLayout(self.toolbar)
-        self.toolbar_layout.setContentsMargins(0, 0, 0, 0)
-        self.toolbar_layout.setSpacing(6)
-        self.toolbar_stack_layout.addWidget(self.toolbar)
-
-        if self.embedded:
-            # Embedded editor pages must never create a QMenuBar. Plasma's
-            # global-menu exporter follows focus changes and can otherwise
-            # switch away from the authoritative Plus menu when an editor
-            # gains focus. Keep only a non-widget registry for Ricopad's
-            # QMenus/QActions; MainWindow owns the sole application menu bar.
-            self.app_menu_bar = _EmbeddedMenuRegistry()
-        else:
-            self.app_menu_bar = self.menuBar()
-            self.app_menu_bar.clear()
-        self.make_file_menu(); self.make_edit_menu(); self.make_format_menu()
-        self.make_insert_menu(); self.make_view_menu(); self.make_help_menu()
-
-        self.menu_buttons_container = QWidget(self.toolbar)
-        self.menu_buttons_layout = QHBoxLayout(self.menu_buttons_container)
-        self.menu_buttons_layout.setContentsMargins(0, 0, 0, 0)
-        self.menu_buttons_layout.setSpacing(6)
-        self.menu_buttons_container.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
-        self.menu_buttons = []
-        for label, menu in (("File",self.file_menu),("Edit",self.edit_menu),("Format",self.format_menu),("Insert",self.insert_menu),("View",self.view_menu),("Help",self.help_menu)):
-            button=QToolButton(self.menu_buttons_container); button.setText(label)
-            button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-            button.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Fixed)
-            button.setMenu(menu); self.menu_buttons_layout.addWidget(button); self.menu_buttons.append(button)
-        self.primary_controls=QWidget(self.toolbar)
-        self.primary_controls.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Preferred)
-        primary_layout=QHBoxLayout(self.primary_controls); primary_layout.setContentsMargins(0,0,0,0); primary_layout.setSpacing(6)
-        primary_layout.addWidget(self.menu_buttons_container)
-        self.toolbar_layout.addWidget(self.primary_controls,0,Qt.AlignmentFlag.AlignLeft)
-
-        self.search_container=QWidget(self.toolbar); self.search_container.setObjectName("searchContainer")
-        self.search_container.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Preferred)
-        search_layout=QHBoxLayout(self.search_container); search_layout.setContentsMargins(0,0,0,0); search_layout.setSpacing(6)
-        self.search_entry=QLineEdit(self.search_container); self.search_entry.setPlaceholderText("Find text")
-        self.search_entry.returnPressed.connect(self.find_next); self.search_entry.textChanged.connect(self.on_search_text_changed)
-        self.search_button=QPushButton(self.search_container); self.bind_custom_icon(self.search_button,"find"); self.search_button.setToolTip("Highlight all matches"); self.search_button.setFocusPolicy(Qt.FocusPolicy.NoFocus); self.search_button.clicked.connect(self.find_text_and_refocus)
-        self.search_count_label=QLabel("0/0",self.search_container); self.search_count_label.setMinimumWidth(42); self.search_count_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.search_previous_button=QToolButton(self.search_container); self.bind_custom_icon(self.search_previous_button,"previous"); self.search_previous_button.setToolTip("Previous Match (Shift+F3)"); self.search_previous_button.setShortcut(QKeySequence("Shift+F3")); self.search_previous_button.setFocusPolicy(Qt.FocusPolicy.NoFocus); self.search_previous_button.clicked.connect(self.find_previous)
-        self.search_next_button=QToolButton(self.search_container); self.bind_custom_icon(self.search_next_button,"next"); self.search_next_button.setToolTip("Next Match (F3)"); self.search_next_button.setShortcut(QKeySequence("F3")); self.search_next_button.setFocusPolicy(Qt.FocusPolicy.NoFocus); self.search_next_button.clicked.connect(self.find_next)
-        search_layout.addWidget(self.search_entry,1); search_layout.addWidget(self.search_button); search_layout.addWidget(self.search_count_label); search_layout.addWidget(self.search_previous_button); search_layout.addWidget(self.search_next_button)
-        self.toolbar_layout.addWidget(self.search_container,1)
-
-        self.format_toolbar=QWidget(self.toolbar_stack); self.format_toolbar.setObjectName("formatToolbar")
-        format_layout=QVBoxLayout(self.format_toolbar); format_layout.setContentsMargins(0,0,0,0); format_layout.setSpacing(4)
-        format_top_layout=QHBoxLayout(); format_top_layout.setSpacing(5)
-        format_bottom_layout=QHBoxLayout(); format_bottom_layout.setSpacing(5)
-        self.font_combo=QFontComboBox(self.format_toolbar); self.font_combo.setMaximumWidth(175); self.font_combo.setToolTip("Font family"); self.font_combo.setEditable(True); self.font_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        if self.font_combo.lineEdit() is not None:
-            e=self.font_combo.lineEdit(); e.setReadOnly(True); e.setFocusPolicy(Qt.FocusPolicy.NoFocus); e.setAlignment(Qt.AlignmentFlag.AlignLeft|Qt.AlignmentFlag.AlignVCenter)
-        self.font_combo.currentTextChanged.connect(self._reset_font_face_display); self.font_combo.currentFontChanged.connect(self.set_selected_font); self.font_combo.currentFontChanged.connect(lambda _font:self._reset_font_face_display())
-        format_top_layout.addWidget(self.font_combo)
-        self.font_size_combo=QComboBox(self.format_toolbar); self.font_size_combo.setEditable(True); self.font_size_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert); self.font_size_combo.setMaximumWidth(68); self.font_size_combo.addItems(["8","9","10","11","12","14","16","18","20","24","28","32","36","48","72"]); self.font_size_combo.currentTextChanged.connect(self.set_selected_font_size); format_top_layout.addWidget(self.font_size_combo)
-        self.font_weight_combo=QComboBox(self.format_toolbar)
-        for text,weight in (("Thin",QFont.Weight.Thin),("Extra Light",QFont.Weight.ExtraLight),("Light",QFont.Weight.Light),("Regular",QFont.Weight.Normal),("Medium",QFont.Weight.Medium),("Demi Bold",QFont.Weight.DemiBold),("Bold",QFont.Weight.Bold),("Extra Bold",QFont.Weight.ExtraBold),("Black",QFont.Weight.Black)):
-            self.font_weight_combo.addItem(text,int(weight))
-        self.font_weight_combo.currentIndexChanged.connect(self.apply_font_weight_from_combo); format_top_layout.addWidget(self.font_weight_combo)
-        self.heading_combo=QComboBox(self.format_toolbar); self.heading_combo.setMaximumWidth(118)
-        for text,level in (("Normal",0),("Heading 1",1),("Heading 2",2),("Heading 3",3),("Heading 4",4),("Heading 5",5),("Heading 6",6)): self.heading_combo.addItem(text,level)
-        self.heading_combo.setToolTip("Font Style — Normal Ctrl+Shift+0; Headings 1–6 Ctrl+Shift+1…6"); self.heading_combo.currentIndexChanged.connect(self.apply_heading_from_combo); format_top_layout.addWidget(self.heading_combo)
-        def tool(target_layout,text,tip,callback,checkable=False):
-            button=QToolButton(self.format_toolbar); button.setText(text); button.setToolTip(tip); button.setFocusPolicy(Qt.FocusPolicy.NoFocus); button.setCheckable(checkable); button.clicked.connect(callback); target_layout.addWidget(button); self.format_widgets.append(button); return button
-        self.bold_button=tool(format_top_layout,"B","Bold (Ctrl+B)",self.toggle_bold,True); f=self.bold_button.font(); f.setBold(True); self.bold_button.setFont(f)
-        self.italic_button=tool(format_top_layout,"I","Italic (Ctrl+I)",self.toggle_italic,True); f=self.italic_button.font(); f.setItalic(True); self.italic_button.setFont(f)
-        self.underline_button=tool(format_top_layout,"U","Underline (Ctrl+U)",self.toggle_underline,True); f=self.underline_button.font(); f.setUnderline(True); self.underline_button.setFont(f)
-        self.strike_button=tool(format_top_layout,"S","Strikethrough (Ctrl+Shift+X)",self.toggle_strikethrough,True); f=self.strike_button.font(); f.setStrikeOut(True); self.strike_button.setFont(f)
-        self.text_colour_button=tool(format_top_layout,"A▾","Text Colour (Ctrl+Alt+Shift+C)",self.choose_text_colour)
-        self.highlight_button=tool(format_top_layout,"▣","Highlight Colour (Ctrl+Alt+Shift+H)",self.choose_highlight_colour)
-        format_top_layout.addStretch(1); format_layout.addLayout(format_top_layout)
-        sep=QFrame(self.format_toolbar); sep.setFrameShape(QFrame.Shape.HLine); sep.setFrameShadow(QFrame.Shadow.Sunken); format_layout.addWidget(sep)
-        self.align_left_button=tool(format_bottom_layout,"L","Align Left (Ctrl+L)",lambda:self.set_alignment(Qt.AlignmentFlag.AlignLeft),True)
-        self.align_center_button=tool(format_bottom_layout,"C","Align Centre (Ctrl+E)",lambda:self.set_alignment(Qt.AlignmentFlag.AlignHCenter),True)
-        self.align_right_button=tool(format_bottom_layout,"R","Align Right (Ctrl+R)",lambda:self.set_alignment(Qt.AlignmentFlag.AlignRight),True)
-        self.align_justify_button=tool(format_bottom_layout,"J","Justify (Ctrl+J)",lambda:self.set_alignment(Qt.AlignmentFlag.AlignJustify),True)
-        self.bullet_button=tool(format_bottom_layout,"•","Bullet List (Ctrl+5)",self.toggle_bullet_list,True)
-        self.symbols_button=tool(format_bottom_layout,"†","Symbol",self.show_symbols_popup)
-        self.indent_button=tool(format_bottom_layout,"→","Indent (Ctrl+])",lambda:self.change_indent(1)); self.outdent_button=tool(format_bottom_layout,"←","Outdent (Ctrl+[)",lambda:self.change_indent(-1))
-        self.line_spacing_combo=QComboBox(self.format_toolbar)
-        for label,value in (("1",100),("1.15",115),("1.5",150),("2",200)): self.line_spacing_combo.addItem(label,value)
-        self.line_spacing_combo.setToolTip("Line Spacing — 1.0 Ctrl+1; 1.15 Ctrl+2; 1.5 Ctrl+3; 2.0 Ctrl+4"); self.line_spacing_combo.currentIndexChanged.connect(self.apply_line_spacing_from_combo); format_bottom_layout.addWidget(self.line_spacing_combo); format_bottom_layout.addStretch(1); format_layout.addLayout(format_bottom_layout)
-        self.format_widgets.extend([self.font_combo,self.font_size_combo,self.font_weight_combo,self.heading_combo,self.line_spacing_combo,self.text_colour_button,self.highlight_button])
-        self.toolbar_stack_layout.addWidget(self.format_toolbar)
-
-        self.visual_editor=RichTextEdit(self); self.visual_editor.viewport().installEventFilter(self); self.visual_editor.setObjectName("visualEditor"); self.visual_editor.setAcceptRichText(True); self.visual_editor.setAutoFormatting(QTextEdit.AutoFormattingFlag.AutoNone); self.visual_editor.setFrameShape(QFrame.Shape.NoFrame); self.visual_editor.setContentsMargins(0,0,0,0); self.visual_editor.setViewportMargins(0,0,0,0); self.visual_editor.document().setDocumentMargin(4.0)
-        self.visual_editor.currentCharFormatChanged.connect(self.update_formatting_state); self.visual_editor.cursorPositionChanged.connect(self.update_formatting_state); self.visual_editor.cursorPositionChanged.connect(self.update_status_counts); self.visual_editor.document().modificationChanged.connect(self.on_modification_changed); self.visual_editor.textChanged.connect(self.on_document_text_changed); self.visual_editor.installEventFilter(self)
-        self.text_area=self.visual_editor
-        self.main_layout.addWidget(self.toolbar_stack); self.main_layout.addWidget(self.visual_editor,1)
-
-        self.app_status_bar=self.statusBar(); self.app_status_bar.setSizeGripEnabled(True)
-        self.path_label=QLabel("Untitled.rtf",self.app_status_bar); self.path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse); self.path_label.setToolTip("Untitled.rtf")
-        self.operation_mode_label=QLabel("Insert",self.app_status_bar); self.operation_mode_label.setAlignment(Qt.AlignmentFlag.AlignCenter); self.operation_mode_label.setMinimumWidth(self.operation_mode_label.fontMetrics().horizontalAdvance("Overwrite")+8)
-        self.counter_label=QLabel("Col: 1, Char: 0",self.app_status_bar); self.zoom_label=QLabel("Zoom: 100%",self.app_status_bar)
-        self.app_status_bar.addWidget(self.path_label,1); self.app_status_bar.addPermanentWidget(self.operation_mode_label); self.app_status_bar.addPermanentWidget(self.counter_label); self.app_status_bar.addPermanentWidget(self.zoom_label)
-        self.build_ribbon()
-
-
-    def _attach_toolbar_context_menu(self, widget):
-        """Expose the Ribbon collapse control from a toolbar right-click."""
-        widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        widget.customContextMenuRequested.connect(
-            lambda point, target=widget: self._show_toolbar_context_menu(target.mapToGlobal(point))
-        )
-
-    def _show_toolbar_context_menu(self, global_position):
-        menu=QMenu(self)
-        action = menu.addAction(
-            "Expand Ribbon"
-            if getattr(self, "_ribbon_collapsed", False)
-            else "Collapse Ribbon"
-        )
-        action.triggered.connect(self.toggle_ribbon_collapsed)
-        menu.exec(global_position)
-
-    def build_ribbon(self):
-        """Build Rico Plus's sole RTF command surface: the Ribbon."""
-        self.app_menu_bar.setVisible(False); self.toolbar_stack.setVisible(False); self.main_layout.removeWidget(self.toolbar_stack)
-        self.ribbon_tabs=QTabWidget(self.centralWidget()); self.ribbon_tabs.setObjectName("ricopadRibbon"); self.ribbon_tabs.setDocumentMode(True); self.ribbon_tabs.setMovable(False); self.ribbon_tabs.setTabsClosable(False)
-        self.ribbon_tabs.tabBar().setExpanding(False); self.ribbon_tabs.tabBar().setUsesScrollButtons(True); self.ribbon_tabs.tabBar().installEventFilter(self)
-        self.ribbon_tabs.installEventFilter(self)
-        self._attach_toolbar_context_menu(self.ribbon_tabs)
-        self._attach_toolbar_context_menu(self.ribbon_tabs.tabBar())
-        self._ribbon_collapsed=False; self._ribbon_expanded_minimum_height=0; self._ribbon_expanded_maximum_height=0; self._interface_geometry_refresh_pending=False; self.ribbon_tabs.currentChanged.connect(self._sync_collapsed_ribbon_page)
-        self.ribbon_buttons=[]; self.ribbon_sections=[]; self.ribbon_scroll_areas=[]; self.instant_tooltip_widgets=[]
-        def instant(w): w.setAttribute(Qt.WidgetAttribute.WA_AlwaysShowToolTips,True); w.setProperty("ricopad_instant_tooltip",True); w.installEventFilter(self); self.instant_tooltip_widgets.append(w); return w
-        def page(label):
-            scroll=RibbonScrollArea(self.ribbon_tabs); scroll.setObjectName(f"ribbon{label}Page"); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.Shape.NoFrame); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded); scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            body=QWidget(scroll); self._attach_toolbar_context_menu(scroll.viewport()); self._attach_toolbar_context_menu(body); row=QHBoxLayout(body); row.setContentsMargins(6,4,6,6); row.setSpacing(6); row.setAlignment(Qt.AlignmentFlag.AlignLeft|Qt.AlignmentFlag.AlignTop); scroll.setWidget(body); self.ribbon_tabs.addTab(scroll,label); self.ribbon_scroll_areas.append(scroll); scroll.horizontalScrollBar().rangeChanged.connect(lambda _minimum,_maximum:self._schedule_interface_geometry_refresh()); return row
-        probe=QToolButton(self.ribbon_tabs); probe.setFixedSize(RIBBON_BUTTON_SIZE,RIBBON_BUTTON_SIZE); probe.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen,True); probe.ensurePolished(); pm=QPixmap(RIBBON_BUTTON_SIZE,RIBBON_BUTTON_SIZE); pm.fill(Qt.GlobalColor.transparent); probe.render(pm); im=pm.toImage(); mid=RIBBON_BUTTON_SIZE//2; colour=None
-        for x in range(min(8,RIBBON_BUTTON_SIZE)):
-            c=im.pixelColor(x,mid)
-            if c.alpha()>0: colour=c; break
-        probe.deleteLater(); section_colour=(colour or self.palette().color(QPalette.ColorRole.Mid)).name(QColor.NameFormat.HexRgb)
-        def group(layout,title):
-            frame=QFrame(self.ribbon_tabs); frame.setObjectName("ribbonSection"); frame.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Fixed); frame.setStyleSheet("QFrame#ribbonSection { background-color: palette(button); border: 1px solid "+section_colour+"; border-radius: 6px;} QFrame#ribbonSection QLabel#ribbonSectionCaption {background:transparent;border:none;margin-bottom:2px;}")
-            outer=QVBoxLayout(frame); outer.setContentsMargins(8,5,8,6); outer.setSpacing(4); cap=QLabel(title,frame); cap.setObjectName("ribbonSectionCaption"); cap.setAlignment(Qt.AlignmentFlag.AlignRight|Qt.AlignmentFlag.AlignVCenter)
-            cap_font=cap.font()
-            if cap_font.pointSizeF()>0:
-                cap_font.setPointSizeF(max(6.5,cap_font.pointSizeF()*0.74))
-            elif cap_font.pixelSize()>0:
-                cap_font.setPixelSize(max(8,int(round(cap_font.pixelSize()*0.74))))
-            cap_font.setItalic(True)
-            cap.setFont(cap_font)
-            grid=QGridLayout(); grid.setContentsMargins(0,0,0,0); grid.setHorizontalSpacing(4); grid.setVerticalSpacing(3); outer.addLayout(grid); outer.addWidget(cap); layout.addWidget(frame); return frame,grid
-        def normal(b): b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly); b.setIconSize(QSize(RIBBON_ICON_SIZE,RIBBON_ICON_SIZE)); b.setFixedSize(RIBBON_BUTTON_SIZE,RIBBON_BUTTON_SIZE); b.setFocusPolicy(Qt.FocusPolicy.NoFocus); instant(b); self._attach_toolbar_context_menu(b); return b
-        def ab(grid,action,r,c,icon):
-            b=QToolButton(self.ribbon_tabs); self.bind_custom_icon(action,icon)
-            label=action.text().replace("&","").replace("…","").strip()
-            tooltip=self._toolbar_action_tooltip(action,label)
-            action.setToolTip(tooltip); b.setDefaultAction(action); b.setToolTip(tooltip); b.setAccessibleName(label)
-            normal(b); grid.addWidget(b,r,c,Qt.AlignmentFlag.AlignCenter); self.ribbon_buttons.append(b); return b
-        def fb(grid,w,r,c,icon,label,action):
-            w.setParent(self.ribbon_tabs); w.setText("")
-            clean=action.text().replace("&","").replace("…","").strip() or label
-            tooltip=self._toolbar_action_tooltip(action,clean)
-            action.setToolTip(tooltip); w.setToolTip(tooltip); w.setAccessibleName(clean)
-            normal(w); self.bind_custom_icon(w,icon); grid.addWidget(w,r,c,Qt.AlignmentFlag.AlignCenter); self.ribbon_buttons.append(w); return w
-        def sel(grid,w,r,c,tip,width,span=1): w.setParent(self.ribbon_tabs); w.setToolTip(w.toolTip() or tip); w.setFixedSize(width,RIBBON_BUTTON_SIZE); w.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Fixed); instant(w); grid.addWidget(w,r,c,1,span,Qt.AlignmentFlag.AlignCenter); return w
-        file_page=page("File")
-        _,g=group(file_page,"Workspace & Print")
-        for a,r,c,i in ((self.print_action,0,0,"print"),(self.export_pdf_action,0,1,"export-pdf"),(self.page_setup_action,0,2,"page-setup"),(self.new_action,1,0,"new"),(self.workspace_action,1,1,"open-folder"),(self.dashboard_action,1,2,"show-dashboard")): ab(g,a,r,c,i)
-        _,g=group(file_page,"This File")
-        for a,r,c,i in ((self.save_as_action,0,0,"save-as"),(self.properties_action,0,1,"properties"),(self.delete_file_action,0,2,"delete-file"),(self.external_editor_action,0,3,"external-editor"),(self.save_action,1,0,"save"),(self.rename_action,1,1,"rename"),(self.duplicate_file_action,1,2,"duplicate-file"),(self.open_folder_action,1,3,"open-folder")): ab(g,a,r,c,i)
-        _,g=group(file_page,"Save & Continue")
-        ab(g,self.save_new_action,0,0,"new")
-        ab(g,self.save_dashboard_action,0,1,"save-exit")
-        ab(g,self.save_exit_action,1,0,"save-exit")
-        ab(g,self.exit_action,1,1,"exit")
-        file_page.addStretch(1)
-
-        home=page("Home")
-        _,g=group(home,"Clipboard")
-        for a,r,c,i in ((self.select_all_action,0,0,"select-all"),(self.cut_action,0,1,"cut"),(self.delete_text_action,0,2,"delete-text"),(self.paste_plain_action,0,3,"paste-plain"),(self.undo_action,1,0,"undo"),(self.redo_action,1,1,"redo"),(self.copy_action,1,2,"copy"),(self.paste_action,1,3,"paste")): ab(g,a,r,c,i)
-        self.format_ribbon_group,g=group(home,"Font"); sel(g,self.font_combo,0,0,"Font Face",RIBBON_FONT_FAMILY_WIDTH,2); sel(g,self.font_size_combo,0,2,"Font Size",RIBBON_BUTTON_SIZE); sel(g,self.heading_combo,0,3,"Font Style",RIBBON_BUTTON_SIZE); ab(g,self.increase_font_size_action,1,0,"font-size-increase"); ab(g,self.decrease_font_size_action,1,1,"font-size-decrease"); ab(g,self.font_dialog_action,1,2,"font-dialog"); fb(g,self.text_colour_button,1,3,"text-color","Text Colour",self.text_colour_action)
-        _,g=group(home,"Formatting"); fb(g,self.underline_button,0,0,"underline","Underline",self.underline_action); fb(g,self.strike_button,0,1,"strikethrough","Strikethrough",self.strike_action); ab(g,self.subscript_action,0,2,"subscript"); ab(g,self.superscript_action,0,3,"superscript"); fb(g,self.bold_button,1,0,"bold","Bold",self.bold_action); fb(g,self.italic_button,1,1,"italic","Italic",self.italic_action); fb(g,self.highlight_button,1,2,"highlight","Highlight Colour",self.highlight_colour_action); fb(g,self.bullet_button,1,3,"bullet-list","Bullet List",self.bulleted_list_action)
-        self.paragraph_ribbon_group,g=group(home,"Paragraph"); fb(g,self.align_right_button,0,0,"align-right","Align Right",self.alignment_right_action); fb(g,self.align_justify_button,0,1,"justify","Justify",self.alignment_justify_action); fb(g,self.indent_button,0,2,"indent","Indent",self.increase_indent_action); fb(g,self.outdent_button,0,3,"outdent","Outdent",self.decrease_indent_action); fb(g,self.align_left_button,1,0,"align-left","Align Left",self.alignment_left_action); fb(g,self.align_center_button,1,1,"align-center","Align Centre",self.alignment_center_action); ab(g,self.paragraph_action,1,2,"paragraph"); sel(g,self.line_spacing_combo,1,3,"Line Spacing",RIBBON_BUTTON_SIZE)
-        _,g=group(home,"Advanced"); ab(g,self.clear_formatting_action,0,0,"clear-formatting"); ab(g,self.replace_action,0,1,"replace"); ab(g,self.duplicate_line_action,1,0,"duplicate-line"); ab(g,self.delete_line_action,1,1,"delete-line"); home.addStretch(1)
-
-        insert_page=page("Insert")
-        _,g=group(insert_page,"Classics"); ab(g,self.insert_date_time_action,0,0,"date-time"); ab(g,self.symbol_action,0,1,"symbols"); ab(g,self.date_action,1,0,"insert-date"); ab(g,self.time_action,1,1,"insert-time")
-        _,g=group(insert_page,"Links & Images"); ab(g,self.remove_link_action,0,0,"remove-link"); ab(g,self.image_action,0,1,"insert-image"); ab(g,self.link_action,1,0,"insert-link"); ab(g,self.edit_link_action,1,1,"edit-link")
-        _,g=group(insert_page,"Tables & Lines"); ab(g,self.table_delete_action,0,0,"delete-table"); ab(g,self.table_column_left_action,0,1,"insert-column-left"); ab(g,self.table_column_right_action,0,2,"insert-column-right"); ab(g,self.table_delete_column_action,0,3,"delete-column"); ab(g,self.table_action,1,0,"insert-table"); ab(g,self.table_row_above_action,1,1,"insert-row-above"); ab(g,self.table_row_below_action,1,2,"insert-row-below"); ab(g,self.table_delete_row_action,1,3,"delete-row"); ab(g,self.horizontal_rule_action,1,4,"horizontal-rule"); insert_page.addStretch(1)
-
-        view=page("View")
-        _,g=group(view,"View Control"); ab(g,self.view_only_action,0,0,"view-only"); ab(g,self.wrap_action,0,1,"word-wrap"); ab(g,self.editor_canvas_theme_action,0,2,"editor-canvas"); ab(g,self.zoom_in_action,1,0,"zoom-in"); ab(g,self.zoom_reset_action,1,1,"zoom-reset"); ab(g,self.zoom_out_action,1,2,"zoom-out")
-        _,g=group(view,"Preferences"); ab(g,self.search_bar_action,0,0,"search-toggle"); ab(g,self.tab_width_action,0,1,"tab-width"); ab(g,self.status_bar_action,1,0,"status-bar"); ab(g,self.default_font_action,1,1,"default-font"); view.addStretch(1)
-
-        help_page=page("Help"); _,g=group(help_page,"GitHub"); ab(g,self.github_action,0,0,"github"); ab(g,self.issue_action,1,0,"issue"); _,g=group(help_page,"Help"); ab(g,self.documentation_action,0,0,"documentation"); ab(g,self.tutorial_action,0,1,"tutorial"); ab(g,self.shortcuts_action,1,0,"shortcuts"); ab(g,self.about_action,1,1,"about"); help_page.addStretch(1)
-        self.search_container.setParent(self.centralWidget()); self.search_container.setObjectName("ribbonSearchBar"); self.main_layout.insertWidget(0,self.ribbon_tabs); self.main_layout.addWidget(self.search_container); self.search_container.setVisible(self.show_search_bar); self.ribbon_tabs.setCurrentIndex(1)
-        self.next_ribbon_tab_action=QAction("Next Ribbon Tab",self); self.next_ribbon_tab_action.setShortcut(QKeySequence("Ctrl+Tab")); self.next_ribbon_tab_action.triggered.connect(lambda:self.cycle_ribbon_tab(1)); self.addAction(self.next_ribbon_tab_action)
-        self.previous_ribbon_tab_action=QAction("Previous Ribbon Tab",self); self.previous_ribbon_tab_action.setShortcut(QKeySequence("Ctrl+Shift+Tab")); self.previous_ribbon_tab_action.triggered.connect(lambda:self.cycle_ribbon_tab(-1)); self.addAction(self.previous_ribbon_tab_action)
-        self.format_toolbar.setVisible(False); self.menu_buttons_container.setVisible(False); self.toolbar.setVisible(False)
-        QTimer.singleShot(0,self._refresh_interface_geometry)
-
-    def _toolbar_action_tooltip(self, action, label=None):
-        """Return the authoritative icon-toolbar tooltip for one QAction."""
-        clean=(label or action.text() or "").replace("&","").replace("…","").strip()
-        shortcut=action.shortcut().toString(QKeySequence.SequenceFormat.NativeText).strip()
-        return f"{clean} — {shortcut}" if shortcut else clean
-
-    def _schedule_interface_geometry_refresh(self):
-        """Coalesce style/layout changes into one Ribbon geometry pass."""
-        if getattr(self, "_interface_geometry_refresh_pending", False):
-            return
-        self._interface_geometry_refresh_pending = True
-        QTimer.singleShot(0, self._refresh_interface_geometry)
-
-    def _refresh_ribbon_geometry(self):
-        """Derive Ribbon height from the real controls and active Qt style."""
-        tabs = getattr(self, "ribbon_tabs", None)
-        if tabs is None:
-            return
-        page_heights = []
-        for frame in getattr(self, "ribbon_sections", ()):
-            layout = frame.layout()
-            if layout is not None:
-                layout.activate()
-            frame.setFixedHeight(max(1, frame.sizeHint().height()))
-        for scroll in getattr(self, "ribbon_scroll_areas", ()):
-            body = scroll.widget()
-            if body is None:
-                continue
-            layout = body.layout()
-            if layout is not None:
-                layout.activate()
-            body_height = max(
-                body.minimumSizeHint().height(), body.sizeHint().height()
-            )
-            hbar = scroll.horizontalScrollBar()
-            scrollbar_height = max(
-                hbar.minimumSizeHint().height(), hbar.sizeHint().height()
-            )
-            page_heights.append(
-                body_height + scrollbar_height + (scroll.frameWidth() * 2)
-            )
-        if not page_heights:
-            return
-        page_height = max(page_heights)
-        for scroll in self.ribbon_scroll_areas:
-            scroll.setFixedHeight(page_height)
-        tabs.tabBar().ensurePolished()
-        tab_height = max(
-            tabs.tabBar().minimumSizeHint().height(),
-            tabs.tabBar().sizeHint().height(),
-        )
-        expanded_height = tab_height + page_height + 2
-        self._ribbon_expanded_minimum_height = expanded_height
-        self._ribbon_expanded_maximum_height = expanded_height
-        if not getattr(self, "_ribbon_collapsed", False):
-            tabs.setFixedHeight(expanded_height)
-        tabs.updateGeometry()
-
-    def _refresh_interface_geometry(self):
-        """Enforce the 52-pixel Ribbon control grid in every theme."""
-        self._interface_geometry_refresh_pending = False
-        for button in getattr(self, "ribbon_buttons", ()):
-            button.setFixedSize(RIBBON_BUTTON_SIZE, RIBBON_BUTTON_SIZE)
-            button.setSizePolicy(
-                QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
-            )
-        for widget, width in (
-            (getattr(self, "font_combo", None), RIBBON_FONT_FAMILY_WIDTH),
-            (getattr(self, "font_size_combo", None), RIBBON_BUTTON_SIZE),
-            (getattr(self, "heading_combo", None), RIBBON_BUTTON_SIZE),
-            (getattr(self, "line_spacing_combo", None), RIBBON_BUTTON_SIZE),
-        ):
-            if widget is not None:
-                widget.setFixedSize(width, RIBBON_BUTTON_SIZE)
-                widget.setSizePolicy(
-                    QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
-                )
-        self._refresh_ribbon_geometry()
-
-    def cycle_ribbon_tab(self, direction):
-        """Move to the next/previous visible ribbon tab with wrap-around."""
-        count = self.ribbon_tabs.count()
-        if count <= 0:
-            return
-        current = self.ribbon_tabs.currentIndex()
-        self.ribbon_tabs.setCurrentIndex((current + int(direction)) % count)
-
-    def _collapsed_ribbon_height(self):
-        """Return enough height for the tab titles while hiding page contents."""
-        tab_bar = self.ribbon_tabs.tabBar()
-        return max(tab_bar.height(), tab_bar.sizeHint().height(), 1) + 2
-
-    def _sync_collapsed_ribbon_page(self, _index=None):
-        """Keep page contents hidden when tabs are changed while collapsed."""
-        if not getattr(self, "_ribbon_collapsed", False):
-            return
-        current = self.ribbon_tabs.currentWidget()
-        if current is not None:
-            current.setVisible(False)
-
-
-    def set_ribbon_collapsed(self, collapsed, *, persist=True):
-        collapsed=bool(collapsed)
-        self.ribbon_collapsed_preference = collapsed
-        if collapsed == getattr(self,"_ribbon_collapsed",False):
-            if persist: self.save_preferences()
-            return
-        self._ribbon_collapsed=collapsed
-        current=self.ribbon_tabs.currentWidget()
-        if collapsed:
-            if current is not None: current.setVisible(False)
-            height=self._collapsed_ribbon_height(); self.ribbon_tabs.setMinimumHeight(height); self.ribbon_tabs.setMaximumHeight(height)
-            self.statusBar().showMessage("Ribbon controls hidden. Click a tab title once to reveal them.",3000)
-        else:
-            self.ribbon_tabs.setFixedHeight(self._ribbon_expanded_minimum_height)
-            if current is not None: current.setVisible(True)
-            self.statusBar().showMessage("Ribbon controls revealed.",2000)
-        self.ribbon_tabs.updateGeometry()
-        if persist: self.save_preferences()
-
-
-    def toggle_ribbon_collapsed(self):
-        """Toggle ribbon visibility without hiding the tab titles."""
-        self.set_ribbon_collapsed(not getattr(self, "_ribbon_collapsed", False))
-
 
     def custom_icon_variant(self):
         """Choose icons from the active AppImage theme or the host system palette."""
@@ -1483,7 +1218,7 @@ class RtfEditorWindow(QMainWindow):
 
     def make_view_menu(self):
         menu=QMenu("&View",self); self.view_menu=menu; self.app_menu_bar.addMenu(menu)
-        self.view_only_action=self.add_menu_action(menu,"Lock Editor",self.toggle_view_only,QKeySequence("F12"),checkable=True)
+        self.view_only_action=self.add_menu_action(menu,"Locked Mode",self.toggle_view_only,QKeySequence("F12"),checkable=True)
         self.status_bar_action=self.add_menu_action(menu,"Status Bar",self.toggle_status_bar,QKeySequence("Ctrl+Alt+Shift+S"),checkable=True)
         menu.addSeparator()
         self.wrap_action=self.add_menu_action(menu,"Word Wrap",self.toggle_word_wrap,QKeySequence("Ctrl+Alt+Shift+W"),checkable=True)
@@ -1545,14 +1280,13 @@ class RtfEditorWindow(QMainWindow):
         self.table_edit_actions=[self.table_row_above_action,self.table_row_below_action,self.table_delete_row_action,self.table_column_left_action,self.table_column_right_action,self.table_delete_column_action,self.table_delete_action]
         self.visual_insert_actions.extend([self.insert_date_time_action,self.date_action,self.time_action,self.symbol_action,self.image_action,self.link_action,self.edit_link_action,self.remove_link_action,self.horizontal_rule_action,self.table_action,*self.table_edit_actions])
 
-
     def make_format_menu(self):
         menu=QMenu("F&ormat",self); self.format_menu=menu; self.app_menu_bar.addMenu(menu)
         def add(label,callback,shortcut=None):
             action=self.add_menu_action(menu,label,callback,shortcut); self.format_actions.append(action); return action
-        self.font_dialog_action=add("Font…",self.choose_selection_font,QKeySequence("Ctrl+Alt+Shift+F"))
-        self.increase_font_size_action=add("Increase Font Size",self.increase_font_size)
-        self.decrease_font_size_action=add("Decrease Font Size",self.decrease_font_size)
+        self.font_dialog_action=add("Font…",self.choose_selection_font,QKeySequence("Ctrl+Shift+F"))
+        self.increase_font_size_action=add("Increase Font Size",self.increase_font_size,QKeySequence("Ctrl+Shift+]"))
+        self.decrease_font_size_action=add("Decrease Font Size",self.decrease_font_size,QKeySequence("Ctrl+Shift+["))
         self.text_colour_action=add("Text Colour…",self.choose_text_colour,QKeySequence("Ctrl+Alt+Shift+C"))
         self.highlight_colour_action=add("Highlight Colour…",self.choose_highlight_colour,QKeySequence("Ctrl+Alt+Shift+H"))
         self.clear_highlight_action=add("Clear Highlight",self.clear_highlight)
@@ -1575,7 +1309,7 @@ class RtfEditorWindow(QMainWindow):
         for label,percent,shortcut in (("1.0",100,"Ctrl+1"),("1.15",115,"Ctrl+2"),("1.5",150,"Ctrl+3"),("2.0",200,"Ctrl+4")):
             action=QAction(label,self,checkable=True); action.setShortcut(QKeySequence(shortcut)); action.triggered.connect(lambda _checked=False,selected=percent:self.set_line_spacing(selected)); spacing_menu.addAction(action); self.addAction(action); self.line_spacing_actions[percent]=action; self.format_actions.append(action)
         menu.addSeparator()
-        self.bulleted_list_action=add("Bullet List",self.toggle_bullet_list,QKeySequence("Ctrl+5")); self.bulleted_list_action.setCheckable(True)
+        self.bulleted_list_action=add("Bullet List",self.toggle_bullet_list,QKeySequence("Ctrl+Shift+L")); self.bulleted_list_action.setCheckable(True)
         self.increase_indent_action=add("Indent",lambda:self.change_indent(1),QKeySequence("Ctrl+]"))
         self.decrease_indent_action=add("Outdent",lambda:self.change_indent(-1),QKeySequence("Ctrl+[")); menu.addSeparator()
         self.paragraph_action=add("Paragraph…",self.show_paragraph_dialog,QKeySequence("Ctrl+Alt+Shift+P"))
@@ -1610,28 +1344,10 @@ class RtfEditorWindow(QMainWindow):
             menu, "About Rico Plus", self.show_about_dialog
         )
         self.about_action.setMenuRole(QAction.MenuRole.AboutRole)
-        # The action remains available to the Help ribbon and platform roles.
-        # The action remains available to the Help ribbon and platform roles.
 
     def bind_shortcuts(self):
         """Shortcuts are owned by the shared actions used by the ribbon."""
         return
-
-
-    def apply_preferences(self):
-        for theme, action in getattr(self, "appimage_theme_actions", {}).items():
-            action.setChecked(theme == self.effective_appimage_theme())
-        for icon_set, action in getattr(self, "appimage_icon_actions", {}).items():
-            action.setChecked(icon_set == self.effective_appimage_icon_set())
-        self.apply_editor_font(); self.set_word_wrap_mode(); self.search_bar_action.setChecked(self.show_search_bar); self.search_container.setVisible(self.show_search_bar)
-        self.status_bar_action.blockSignals(True); self.status_bar_action.setChecked(bool(self.show_status_bar)); self.status_bar_action.blockSignals(False); self.app_status_bar.setVisible(self.show_status_bar)
-        self._update_mode_capabilities(); self.apply_tab_width(); self.apply_zoom_preference()
-        self.set_ribbon_collapsed(self.ribbon_collapsed_preference,persist=False)
-
-
-
-
-
 
     def _focus_editor_after_startup(self):
         """Give normal startup focus to the document after Ribbon is shown."""
@@ -1643,44 +1359,25 @@ class RtfEditorWindow(QMainWindow):
         self.visual_editor.setFocus(Qt.FocusReason.OtherFocusReason)
         self.visual_editor.ensureCursorVisible()
 
-
     def toggle_view_only(self, checked):
         checked=bool(checked)
         if not checked and self.view_only:
-            dialog=QMessageBox(self); dialog.setWindowTitle("Disable Lock Editor? — Rico Plus"); dialog.setIcon(QMessageBox.Icon.Warning); dialog.setText("Lock Editor protects files from accidental changes."); dialog.setInformativeText("Continue only when you intend to edit the document.")
+            dialog=QMessageBox(self); dialog.setWindowTitle("Disable Locked Mode? — Rico Plus"); dialog.setIcon(QMessageBox.Icon.Warning); dialog.setText("Locked Mode protects files from accidental changes."); dialog.setInformativeText("Continue only when you intend to edit the document.")
             keep=dialog.addButton("Keep Locked",QMessageBox.ButtonRole.RejectRole); cont=dialog.addButton("Continue",QMessageBox.ButtonRole.AcceptRole); dialog.setDefaultButton(keep); dialog.setEscapeButton(keep); dialog.exec()
             if dialog.clickedButton() is not cont:
                 self.view_only_action.blockSignals(True); self.view_only_action.setChecked(True); self.view_only_action.blockSignals(False); return
-        self.view_only=checked; self.persist_view_only=checked; self._view_only_prompt_shown=False; self.view_only_action.blockSignals(True); self.view_only_action.setChecked(checked); self.view_only_action.blockSignals(False); self._update_mode_capabilities(); self.update_title(); self.update_status_counts(); self.save_preferences(); self.statusBar().showMessage("Lock Editor enabled." if checked else "Lock Editor disabled.",3000)
-
-
+        self.view_only=checked; self.persist_view_only=checked; self._view_only_prompt_shown=False; self.view_only_action.blockSignals(True); self.view_only_action.setChecked(checked); self.view_only_action.blockSignals(False); self._update_mode_capabilities(); self.update_title(); self.update_status_counts(); self.save_preferences(); self._show_status_message("Locked Mode enabled." if checked else "Locked Mode disabled.",3000)
 
     def explain_view_only_block(self):
-        self.statusBar().showMessage("Editing is disabled while Lock Editor is enabled.",4000)
+        self._show_status_message("Editing is disabled while Locked Mode is enabled.",4000)
         if self._view_only_prompt_shown: return
         self._view_only_prompt_shown=True
-        QMessageBox.information(self,"Lock Editor — Rico Plus","Editing is disabled because Lock Editor is enabled.\n\nClear View → Lock Editor and confirm Continue to edit the document.")
-
+        QMessageBox.information(self,"Locked Mode — Rico Plus","Editing is disabled because Locked Mode is enabled.\n\nClear View → Locked Mode and confirm Continue to edit the document.")
 
     def eventFilter(self, watched, event):
-        ribbon_tabs=getattr(self,"ribbon_tabs",None)
-        if ribbon_tabs is not None and watched is ribbon_tabs and event.type() in (QEvent.Type.Resize,QEvent.Type.Show,QEvent.Type.LayoutRequest,QEvent.Type.StyleChange,QEvent.Type.FontChange):
-            self._schedule_interface_geometry_refresh()
-        if ribbon_tabs is not None and watched is ribbon_tabs.tabBar():
-            if event.type()==QEvent.Type.MouseButtonPress and getattr(self,"_ribbon_collapsed",False) and event.button()==Qt.MouseButton.LeftButton:
-                idx=ribbon_tabs.tabBar().tabAt(event.position().toPoint())
-                if idx>=0: ribbon_tabs.setCurrentIndex(idx); self.set_ribbon_collapsed(False); return True
-            if event.type()==QEvent.Type.MouseButtonDblClick and not getattr(self,"_ribbon_collapsed",False) and event.button()==Qt.MouseButton.LeftButton and ribbon_tabs.tabBar().tabAt(event.position().toPoint())>=0:
-                self.set_ribbon_collapsed(True); return True
-            if event.type()==QEvent.Type.Wheel:
-                delta=event.angleDelta().y() or event.angleDelta().x()
-                if delta: self.cycle_ribbon_tab(-1 if delta>0 else 1); return True
         if bool(watched.property("ricopad_instant_tooltip")):
             if event.type()==QEvent.Type.Enter and watched.toolTip(): QToolTip.showText(watched.mapToGlobal(watched.rect().bottomLeft()),watched.toolTip(),watched,watched.rect(),7000)
             elif event.type()==QEvent.Type.Leave: QToolTip.hideText()
-            elif event.type()==QEvent.Type.Wheel:
-                scroll=ribbon_tabs.currentWidget() if ribbon_tabs is not None else None
-                if isinstance(scroll,RibbonScrollArea) and scroll.pan_from_wheel_event(event): return True
         editor=getattr(self,"visual_editor",None)
         viewport=editor.viewport() if editor is not None else None
         if watched is viewport and event.type() in (QEvent.Type.DragEnter,QEvent.Type.DragMove,QEvent.Type.Drop):
@@ -1706,7 +1403,7 @@ class RtfEditorWindow(QMainWindow):
             if event.type()==QEvent.Type.KeyPress:
                 modifiers=event.modifiers(); mutating=event.key() in {Qt.Key.Key_Backspace,Qt.Key.Key_Delete,Qt.Key.Key_Return,Qt.Key.Key_Enter,Qt.Key.Key_Tab}; printable=bool(event.text()) and not (modifiers&(Qt.KeyboardModifier.ControlModifier|Qt.KeyboardModifier.AltModifier|Qt.KeyboardModifier.MetaModifier)); standard=any(event.matches(k) for k in (QKeySequence.StandardKey.Cut,QKeySequence.StandardKey.Paste,QKeySequence.StandardKey.Undo,QKeySequence.StandardKey.Redo))
                 if mutating or printable or standard: self.explain_view_only_block(); return True
-        return super().eventFilter(watched,event)
+        return QWidget.eventFilter(self, watched, event)
 
     def infer_editor_canvas_theme(self):
         """Infer the existing editor appearance without changing it.
@@ -1742,22 +1439,15 @@ class RtfEditorWindow(QMainWindow):
         action.setToolTip(tooltip)
         action.setStatusTip(f"Editor canvas appearance: {current}")
         action.blockSignals(False)
-        for button in getattr(self, "ribbon_buttons", ()):
-            try:
-                if button.defaultAction() is action:
-                    button.setToolTip(tooltip)
-                    button.setStatusTip(action.statusTip())
-                    button.setAccessibleName(f"Editor canvas appearance: {current}")
-            except RuntimeError:
-                continue
 
     def apply_editor_canvas_theme(self, update_action=True):
         """Apply a display-only light/dark canvas override without rewriting RTF formatting."""
         if not hasattr(self,"visual_editor"): return
         provider = getattr(self, "managed_canvas_light_provider", None)
-        if self.embedded and callable(provider):
-            # Managed Plus pages have exactly one owner for canvas appearance:
-            # the Plus follow/override preference.
+        if callable(provider):
+            # This class is inherently the managed Plus editor component; there
+            # is no standalone/embedded mode flag on this path.  Plus owns the
+            # canvas follow/override preference and the editor consumes it.
             self.editor_canvas_theme = "light" if bool(provider()) else "dark"
         elif self.editor_canvas_theme not in ("light","dark"):
             self.editor_canvas_theme=self.infer_editor_canvas_theme()
@@ -1791,7 +1481,7 @@ class RtfEditorWindow(QMainWindow):
         self.editor_canvas_theme = "dark" if bool(checked) else "light"
         self.apply_editor_canvas_theme(update_action=True)
         self.save_preferences()
-        self.statusBar().showMessage(
+        self._show_status_message(
             "Editor canvas switched to a dark background."
             if self.editor_canvas_theme == "dark"
             else "Editor canvas switched to a light background.",
@@ -1819,15 +1509,25 @@ class RtfEditorWindow(QMainWindow):
             palette.setColor(QPalette.ColorRole.HighlightedText,QColor("#FFFFFF"))
             palette.setColor(QPalette.ColorRole.PlaceholderText,QColor("#8E969E"))
         else:
-            palette.setColor(QPalette.ColorRole.Window,QColor("#F5F6F7"))
-            palette.setColor(QPalette.ColorRole.WindowText,QColor("#202124"))
-            palette.setColor(QPalette.ColorRole.Base,QColor("#FFFFFF"))
-            palette.setColor(QPalette.ColorRole.AlternateBase,QColor("#F1F3F4"))
-            palette.setColor(QPalette.ColorRole.Text,QColor("#202124"))
-            palette.setColor(QPalette.ColorRole.Button,QColor("#F1F3F4"))
-            palette.setColor(QPalette.ColorRole.ButtonText,QColor("#202124"))
+            application=QApplication.instance()
+            palette=QPalette(application.style().standardPalette()) if application is not None else QPalette()
+            palette.setColor(QPalette.ColorRole.Window,QColor("#D4D4D4"))
+            palette.setColor(QPalette.ColorRole.WindowText,QColor("#2A2A2A"))
+            palette.setColor(QPalette.ColorRole.Base,QColor("#F4F4F4"))
+            palette.setColor(QPalette.ColorRole.AlternateBase,QColor("#E4E4E4"))
+            palette.setColor(QPalette.ColorRole.ToolTipBase,QColor("#F4F4F4"))
+            palette.setColor(QPalette.ColorRole.ToolTipText,QColor("#2A2A2A"))
+            palette.setColor(QPalette.ColorRole.Text,QColor("#2A2A2A"))
+            palette.setColor(QPalette.ColorRole.Button,QColor("#E4E4E4"))
+            palette.setColor(QPalette.ColorRole.ButtonText,QColor("#2A2A2A"))
+            palette.setColor(QPalette.ColorRole.Light,QColor("#F4F4F4"))
+            palette.setColor(QPalette.ColorRole.Midlight,QColor("#D0D0D0"))
+            palette.setColor(QPalette.ColorRole.Mid,QColor("#B2B2B2"))
+            palette.setColor(QPalette.ColorRole.Dark,QColor("#767676"))
+            palette.setColor(QPalette.ColorRole.Shadow,QColor("#545454"))
             palette.setColor(QPalette.ColorRole.Highlight,QColor("#B24A3B"))
             palette.setColor(QPalette.ColorRole.HighlightedText,QColor("#FFFFFF"))
+            palette.setColor(QPalette.ColorRole.PlaceholderText,QColor("#767676"))
         return palette
 
     def _appimage_palette(self, theme):
@@ -1909,12 +1609,10 @@ class RtfEditorWindow(QMainWindow):
         if theme in ("dark","light"):
             application.setPalette(self._portable_rico_palette(theme))
         if update_actions:
-            for window in tuple(OPEN_WINDOWS):
-                for selected,action in getattr(window,"appimage_theme_actions",{}).items():
-                    action.blockSignals(True); action.setChecked(selected==theme); action.blockSignals(False)
-                window.refresh_portable_icons()
-                window.apply_editor_canvas_theme(update_action=True)
-                window._schedule_interface_geometry_refresh()
+            for selected,action in getattr(self,"appimage_theme_actions",{}).items():
+                action.blockSignals(True); action.setChecked(selected==theme); action.blockSignals(False)
+            self.refresh_portable_icons()
+            self.apply_editor_canvas_theme(update_action=True)
 
     def set_appimage_theme(self, theme):
         """Persist System/Dark/Light application chrome across shipped runtimes."""
@@ -1922,13 +1620,12 @@ class RtfEditorWindow(QMainWindow):
         if theme not in ("system","dark","light") or not self.appimage_theme_available:
             return
         os.environ.pop("RICO_PLUS_APP_THEME",None)
-        for window in tuple(OPEN_WINDOWS):
-            window.appimage_theme=theme
-            window.appimage_theme_override=None
+        self.appimage_theme=theme
+        self.appimage_theme_override=None
         self.apply_appimage_theme(theme)
         self.save_preferences()
         label="System" if theme=="system" else theme.title()
-        self.statusBar().showMessage(f"Theme: {label}.",2500)
+        self._show_status_message(f"Theme: {label}.",2500)
 
     def set_appimage_icon_set(self, icon_set):
         """Persist the Rico Classic/New command-icon family choice."""
@@ -1936,19 +1633,17 @@ class RtfEditorWindow(QMainWindow):
         if icon_set not in ("classic","new") or not self.appimage_theme_available:
             return
         os.environ.pop("RICO_PLUS_ICON_SET",None)
-        for window in tuple(OPEN_WINDOWS):
-            window.appimage_icon_set=icon_set
-            window.appimage_icon_set_override=None
-            for selected,action in getattr(window,"appimage_icon_actions",{}).items():
-                action.blockSignals(True); action.setChecked(selected==icon_set); action.blockSignals(False)
-            window.refresh_portable_icons()
+        self.appimage_icon_set=icon_set
+        self.appimage_icon_set_override=None
+        for selected,action in getattr(self,"appimage_icon_actions",{}).items():
+            action.blockSignals(True); action.setChecked(selected==icon_set); action.blockSignals(False)
+        self.refresh_portable_icons()
         self.save_preferences()
-        self.statusBar().showMessage(f"Rico icons: {'Classic' if icon_set=='classic' else 'New'}.",2500)
+        self._show_status_message(f"Rico icons: {'Classic' if icon_set=='classic' else 'New'}.",2500)
 
     def toggle_appimage_dark_mode(self, checked):
         """Compatibility hook for older shortcuts/configuration."""
         self.set_appimage_theme("dark" if checked else "light")
-
 
     def _new_document_alignment_flag(self):
         return {
@@ -1960,36 +1655,16 @@ class RtfEditorWindow(QMainWindow):
 
     def _build_new_document_template_payload(self):
         """Build an interoperable RTF template containing the exact saved defaults."""
-        family=(self.base_font_family or "Sans Serif").strip() or "Sans Serif"
-        safe_family=family.replace("\\"," ").replace("{"," ").replace("}"," ").replace(";"," ").strip() or "Sans Serif"
-        escaped=[]
-        for char in safe_family:
-            code=ord(char)
-            if 32 <= code < 127:
-                escaped.append(char)
-            else:
-                encoded=char.encode("utf-16-le",errors="replace")
-                for offset in range(0,len(encoded),2):
-                    unit=int.from_bytes(encoded[offset:offset+2],"little")
-                    escaped.append(f"\\u{unit if unit < 32768 else unit-65536}?")
-        align={"left":"\\ql","centre":"\\qc","right":"\\qr","justify":"\\qj"}.get(self.new_document_alignment,"\\ql")
-        spacing=max(50,min(400,int(self.new_document_line_spacing)))
-        point_size=max(6,min(72,int(self.base_font_size)))
-        char_controls=f"\\f0\\fs{point_size*2}"
-        if self.base_font_weight=="bold": char_controls+="\\b"
-        if self.base_font_slant=="italic": char_controls+="\\i"
-        # 240 twips is one proportional line in RTF; Rico Plus stores percent.
-        sl=round(spacing*2.4)
-        body=(
-            "{\\rtf1\\ansi\\ansicpg1252\\deff0\\uc1"
-            "{\\fonttbl{\\f0\\fnil "+"".join(escaped)+";}}"
-            "{\\colortbl ;}"
-            +char_controls+"\\viewkind4\\widowctrl\n"
-            "\\pard"+align+"\\li0\\ri0\\fi0\\sb0\\sa0"
-            +f"\\sl{sl}\\slmult1"
-            +"{\\plain"+char_controls+" }\\par\n}"
+        return build_new_document_rtf_payload(
+            NewDocumentDefaults(
+                font_family=self.base_font_family,
+                font_size=self.base_font_size,
+                font_weight=self.base_font_weight,
+                font_slant=self.base_font_slant,
+                line_spacing=self.new_document_line_spacing,
+                alignment=self.new_document_alignment,
+            )
         )
-        return body.encode("ascii",errors="strict")
 
     def _apply_new_document_defaults_direct(self):
         """Materialise new-document defaults directly in Qt without an RTF re-import."""
@@ -2178,7 +1853,7 @@ class RtfEditorWindow(QMainWindow):
                 self.apply_zoom_preference()
                 self.update_formatting_state()
             else:
-                self.statusBar().showMessage("New-document defaults saved; the open RTF was not reformatted.", 4500)
+                self._show_status_message("New-document defaults saved; the open RTF was not reformatted.", 4500)
             dialog.close()
 
         buttons.accepted.connect(save_defaults)
@@ -2193,8 +1868,6 @@ class RtfEditorWindow(QMainWindow):
         """Compatibility alias retained for older action bindings."""
         self.show_new_document_defaults_dialog()
 
-
-    # ---------- Editing ----------
     def text_area_undo(self):
         if self.document_editing_available():
             self.text_area.undo()
@@ -2341,7 +2014,6 @@ class RtfEditorWindow(QMainWindow):
         # Always restore editor focus after the centred symbol chooser closes.
         self.text_area.setFocus()
 
-    # ---------- Rich-text editing ----------
     def document_editing_available(self, show_message=True):
         """Return whether document mutation is allowed in the active window."""
         if not self.view_only:
@@ -2350,13 +2022,8 @@ class RtfEditorWindow(QMainWindow):
             self.explain_view_only_block()
         return False
 
-
     def visual_editing_available(self, show_message=True):
         return self.document_editing_available(show_message)
-
-
-
-
 
     def merge_character_format(self, char_format):
         """Apply character formatting to selection, current word, or future typing.
@@ -2394,7 +2061,6 @@ class RtfEditorWindow(QMainWindow):
                 return word.charFormat()
         return cursor.charFormat() if cursor.hasSelection() else editor.currentCharFormat()
 
-
     def _reset_font_face_display(self, _text=""):
         """Keep the collapsed font-family field pinned to the start of its name."""
         line_edit = self.font_combo.lineEdit() if hasattr(self, "font_combo") else None
@@ -2411,7 +2077,6 @@ class RtfEditorWindow(QMainWindow):
         fmt.setFontFamily(font.family())
         self.merge_character_format(fmt)
 
-
     def set_selected_font_size(self, value):
         if not self.visual_editing_available(False):
             return
@@ -2425,7 +2090,6 @@ class RtfEditorWindow(QMainWindow):
         fmt.setFontPointSize(size)
         self.merge_character_format(fmt)
 
-
     def apply_font_weight_from_combo(self, _index):
         if self.font_weight_combo.signalsBlocked():
             return
@@ -2433,7 +2097,6 @@ class RtfEditorWindow(QMainWindow):
         if weight is None:
             return
         self.set_selected_font_weight(int(weight))
-
 
     def set_selected_font_weight(self, weight):
         if not self.visual_editing_available(False):
@@ -2445,7 +2108,6 @@ class RtfEditorWindow(QMainWindow):
         fmt = QTextCharFormat()
         fmt.setFontWeight(value)
         self.merge_character_format(fmt)
-
 
     @staticmethod
     def _adjacent_font_size(current_size, direction):
@@ -2460,7 +2122,6 @@ class RtfEditorWindow(QMainWindow):
             (size for size in reversed(FONT_SIZE_STEPS) if size < current - 0.01),
             FONT_SIZE_STEPS[0],
         )
-
 
     def _word_cursor_at_caret(self, cursor):
         """Return WordUnderCursor when the caret touches real word text."""
@@ -2513,14 +2174,11 @@ class RtfEditorWindow(QMainWindow):
             cursor.endEditBlock()
         editor.setTextCursor(cursor); self.update_formatting_state()
 
-
     def increase_font_size(self, _checked=False):
         self._step_selected_font_size(1)
 
-
     def decrease_font_size(self, _checked=False):
         self._step_selected_font_size(-1)
-
 
     def choose_selection_font(self):
         if not self.visual_editing_available():
@@ -2544,20 +2202,13 @@ class RtfEditorWindow(QMainWindow):
         fmt.setFontPointSize(logical_size)
         self.merge_character_format(fmt)
 
-
-
     def toggle_bold(self, _checked=False):
         if not self.visual_editing_available(): return
         current=self._effective_character_format().fontWeight(); fmt=QTextCharFormat(); fmt.setFontWeight(QFont.Weight.Normal if int(current)>=int(QFont.Weight.Bold) else QFont.Weight.Bold); self.merge_character_format(fmt)
 
-
-
-
     def toggle_italic(self, _checked=False):
         if not self.visual_editing_available(): return
         fmt=QTextCharFormat(); fmt.setFontItalic(not self._effective_character_format().fontItalic()); self.merge_character_format(fmt)
-
-
 
     def toggle_underline(self, _checked=False):
         if not self.visual_editing_available():
@@ -2566,13 +2217,9 @@ class RtfEditorWindow(QMainWindow):
         fmt.setFontUnderline(not self._effective_character_format().fontUnderline())
         self.merge_character_format(fmt)
 
-
-
     def toggle_strikethrough(self, _checked=False):
         if not self.visual_editing_available(): return
         fmt=QTextCharFormat(); fmt.setFontStrikeOut(not self._effective_character_format().fontStrikeOut()); self.merge_character_format(fmt)
-
-
 
     def _toggle_vertical_alignment(self, alignment):
         """Toggle superscript or subscript without changing the logical font size."""
@@ -2588,19 +2235,15 @@ class RtfEditorWindow(QMainWindow):
         fmt.setVerticalAlignment(target)
         self.merge_character_format(fmt)
 
-
     def toggle_superscript(self, _checked=False):
         self._toggle_vertical_alignment(
             QTextCharFormat.VerticalAlignment.AlignSuperScript
         )
 
-
     def toggle_subscript(self, _checked=False):
         self._toggle_vertical_alignment(
             QTextCharFormat.VerticalAlignment.AlignSubScript
         )
-
-
 
     @staticmethod
     def _highlight_contrast_colour(colour):
@@ -2663,9 +2306,6 @@ class RtfEditorWindow(QMainWindow):
         if colour.isValid():
             fmt=QTextCharFormat(); fmt.setForeground(colour); fmt.setProperty(RTF_AUTOMATIC_CONTRAST_PROPERTY,False); self.merge_character_format(fmt)
 
-
-
-
     def choose_highlight_colour(self, _checked=False):
         if not self.visual_editing_available():
             return
@@ -2705,12 +2345,10 @@ class RtfEditorWindow(QMainWindow):
         if isinstance(colour,QColor) and colour.isValid():
             self._apply_highlight(colour=colour)
 
-
     def clear_highlight(self, _checked=False):
         if not self.visual_editing_available():
             return
         self._apply_highlight(clear=True)
-
 
     def _blocks_touched_by_cursor(self, cursor):
         """Return each QTextBlock touched by a selection exactly once."""
@@ -2730,7 +2368,6 @@ class RtfEditorWindow(QMainWindow):
                 break
             block=block.next()
         return blocks,start,end
-
 
     def _document_plain_char_format(self):
         """Return the open document's plain-text baseline, never an app preference."""
@@ -2759,7 +2396,6 @@ class RtfEditorWindow(QMainWindow):
         plain.setVerticalAlignment(QTextCharFormat.VerticalAlignment.AlignNormal)
         plain.setBackground(QBrush(Qt.BrushStyle.NoBrush))
         return plain
-
 
     def clear_formatting(self, _checked=False):
         """Reset selected text/paragraph formatting while preserving document objects.
@@ -2820,7 +2456,6 @@ class RtfEditorWindow(QMainWindow):
         if end>start: restored.setPosition(end,QTextCursor.MoveMode.KeepAnchor)
         editor.setTextCursor(restored); editor.setFocus(); self.update_formatting_state()
 
-
     def _mutate_touched_block_formats(self, mutator):
         """Change only requested properties on each selected paragraph's own format."""
         editor=self.visual_editor; cursor=editor.textCursor(); blocks,start,end=self._blocks_touched_by_cursor(cursor)
@@ -2844,12 +2479,10 @@ class RtfEditorWindow(QMainWindow):
             return
         self._mutate_touched_block_formats(lambda fmt,_block: fmt.setAlignment(alignment))
 
-
     def apply_heading_from_combo(self, _index):
         if self.heading_combo.signalsBlocked():
             return
         self.apply_heading(int(self.heading_combo.currentData() or 0))
-
 
     def apply_heading(self, level):
         """Apply a paragraph style immediately to every paragraph touched by the selection."""
@@ -2879,13 +2512,11 @@ class RtfEditorWindow(QMainWindow):
         if end>start: restored.setPosition(end,QTextCursor.MoveMode.KeepAnchor)
         editor.setTextCursor(restored); editor.setFocus(); self.update_formatting_state()
 
-
     def _remove_list_from_blocks(self, blocks):
         for block in blocks:
             block_cursor=QTextCursor(block); block_format=QTextBlockFormat(block.blockFormat())
             block_format.setObjectIndex(-1); block_format.setIndent(0); block_format.setLeftMargin(0.0); block_format.setTextIndent(0.0)
             block_cursor.setBlockFormat(block_format)
-
 
     def _sync_list_marker_format(self, block):
         """Make Qt's list marker use the paragraph's first real text formatting."""
@@ -2902,7 +2533,6 @@ class RtfEditorWindow(QMainWindow):
             QTextCursor(block).setBlockCharFormat(fragment.charFormat())
             return
         QTextCursor(block).setBlockCharFormat(self._document_plain_char_format())
-
 
     def _toggle_list_style(self, style):
         if not self.visual_editing_available(): return
@@ -2924,14 +2554,11 @@ class RtfEditorWindow(QMainWindow):
         if end>start: restored.setPosition(end,QTextCursor.MoveMode.KeepAnchor)
         editor.setTextCursor(restored); editor.setFocus(); self.update_formatting_state()
 
-
     def _remove_current_list(self, cursor):
         blocks,_,_=self._blocks_touched_by_cursor(cursor); self._remove_list_from_blocks(blocks)
 
-
     def toggle_bullet_list(self, _checked=False):
         self._toggle_list_style(QTextListFormat.Style.ListDisc)
-
 
     def change_indent(self, amount):
         if not self.visual_editing_available():
@@ -3049,13 +2676,10 @@ class RtfEditorWindow(QMainWindow):
             restored.setPosition(end,QTextCursor.MoveMode.KeepAnchor)
         editor.setTextCursor(restored); editor.setFocus(); self.update_formatting_state()
 
-
-
     def apply_line_spacing_from_combo(self, _index):
         if self.line_spacing_combo.signalsBlocked():
             return
         self.set_line_spacing(int(self.line_spacing_combo.currentData() or 100))
-
 
     def set_line_spacing(self, percent):
         if not self.visual_editing_available():
@@ -3064,7 +2688,6 @@ class RtfEditorWindow(QMainWindow):
         self._mutate_touched_block_formats(
             lambda fmt,_block: fmt.setLineHeight(float(percent),QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
         )
-
 
     def show_paragraph_dialog(self):
         if not self.visual_editing_available():
@@ -3122,7 +2745,6 @@ class RtfEditorWindow(QMainWindow):
             fmt.setBottomMargin(pt_to_px(after.value()))
             fmt.setLineHeight(float(spacing.currentData()), QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
         self._mutate_touched_block_formats(apply_paragraph)
-
 
     def update_formatting_state(self, _format=None):
         if not hasattr(self, "visual_editor"):
@@ -3230,7 +2852,6 @@ class RtfEditorWindow(QMainWindow):
             self.edit_link_action.setEnabled(in_link)
             self.remove_link_action.setEnabled(in_link)
 
-
     def insert_link(self, _checked=False):
         if not self.visual_editing_available(): return
         cursor=self.visual_editor.textCursor(); selected=cursor.selectedText().replace("\u2029","\n")
@@ -3239,7 +2860,6 @@ class RtfEditorWindow(QMainWindow):
         label=text.text().strip() or url.text().strip(); target=url.text().strip()
         if not target or not is_safe_link_target(target): QMessageBox.warning(self,"Link — Rico Plus","Use a safe http, https, mailto or local anchor target."); return
         fmt=QTextCharFormat(); fmt.setAnchor(True); fmt.setAnchorHref(target); fmt.setForeground(self.palette().color(QPalette.ColorRole.Link)); fmt.setFontUnderline(True); cursor.insertText(label,fmt); self.visual_editor.setTextCursor(cursor)
-
 
     @staticmethod
     def _image_dimensions_safe(image):
@@ -3266,7 +2886,6 @@ class RtfEditorWindow(QMainWindow):
             return None
         return "data:image/png;base64," + base64.b64encode(data).decode("ascii")
 
-
     def _insert_image_resource(self, name, image):
         if image.isNull():
             return False
@@ -3290,7 +2909,6 @@ class RtfEditorWindow(QMainWindow):
         self.visual_editor.setTextCursor(cursor)
         return True
 
-
     def insert_image_data(self, image):
         if not self.visual_editing_available():
             return False
@@ -3302,7 +2920,6 @@ class RtfEditorWindow(QMainWindow):
             )
             return False
         return self._insert_image_resource(name, image)
-
 
     def insert_image_path(self, path):
         if not self.visual_editing_available():
@@ -3350,7 +2967,6 @@ class RtfEditorWindow(QMainWindow):
                 return self._insert_image_resource(name, image)
         return self.insert_image_data(image)
 
-
     def insert_image(self):
         if not self.visual_editing_available():
             return
@@ -3360,7 +2976,6 @@ class RtfEditorWindow(QMainWindow):
         )
         if path:
             self.insert_image_path(path)
-
 
     def _visual_anchor_cursor(self):
         """Return a cursor selecting the anchor under/adjacent to the caret."""
@@ -3412,7 +3027,7 @@ class RtfEditorWindow(QMainWindow):
             return
         cursor = self._visual_anchor_cursor()
         if cursor is None:
-            self.statusBar().showMessage("Place the caret inside a link to edit it.", 4000)
+            self._show_status_message("Place the caret inside a link to edit it.", 4000)
             return
         current = cursor.charFormat().anchorHref()
         url, accepted = QInputDialog.getText(self, "Edit Link", "Address:", text=current)
@@ -3438,7 +3053,7 @@ class RtfEditorWindow(QMainWindow):
             return
         cursor = self._visual_anchor_cursor()
         if cursor is None:
-            self.statusBar().showMessage("Place the caret inside a link to remove it.", 4000)
+            self._show_status_message("Place the caret inside a link to remove it.", 4000)
             return
         fmt = QTextCharFormat()
         fmt.setAnchor(False)
@@ -3517,7 +3132,6 @@ class RtfEditorWindow(QMainWindow):
         self.visual_editor.setFocus()
         self.visual_editor.ensureCursorVisible()
 
-
     def insert_table(self, _checked=False):
         if not self.visual_editing_available(): return
         dialog=QDialog(self); dialog.setWindowTitle("Insert Table — Rico Plus"); form=QFormLayout(dialog); rows=QSpinBox(dialog); rows.setRange(1,1000); rows.setValue(2); columns=QSpinBox(dialog); columns.setRange(1,64); columns.setValue(2); form.addRow("Rows:",rows); form.addRow("Columns:",columns); buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel,parent=dialog); buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject); form.addRow(buttons)
@@ -3533,13 +3147,6 @@ class RtfEditorWindow(QMainWindow):
             for block in (table.firstCursorPosition().block().previous(), table.lastCursorPosition().block().next()):
                 if block.isValid() and not block.text():
                     block_cursor = QTextCursor(block); fmt = QTextBlockFormat(block.blockFormat()); fmt.setProperty(RTF_SYNTHETIC_STRUCTURE_BLOCK, True); block_cursor.setBlockFormat(fmt)
-
-
-
-
-
-
-
 
     def _whole_list_selection_cursor(self, cursor):
         """Expand a whole-item list selection so clipboard HTML retains list semantics."""
@@ -3604,15 +3211,13 @@ class RtfEditorWindow(QMainWindow):
         target.removeSelectedText()
         editor.setTextCursor(target); editor.setFocus(); self.update_formatting_state()
 
-
     def paste_plain_text(self):
         if not self.document_editing_available(): return
         text=QApplication.clipboard().text().replace("\x00","")
         if not text: return
         cursor=self.visual_editor.textCursor(); current=max(0,self.visual_editor.document().characterCount()-1); selected=abs(cursor.selectionEnd()-cursor.selectionStart())
-        if len(text)>MAX_PASTE_CHARACTERS or current-selected+len(text)>MAX_DOCUMENT_CHARACTERS: self.statusBar().showMessage("The paste would exceed Rico Plus's document safety limit.",5000); QApplication.beep(); return
+        if len(text)>MAX_PASTE_CHARACTERS or current-selected+len(text)>MAX_DOCUMENT_CHARACTERS: self._show_status_message("The paste would exceed Rico Plus's document safety limit.",5000); QApplication.beep(); return
         cursor.insertText(text)
-
 
     def delete_selection(self):
         if not self.document_editing_available():
@@ -3623,7 +3228,6 @@ class RtfEditorWindow(QMainWindow):
         else:
             cursor.deleteChar()
         self.text_area.setTextCursor(cursor)
-
 
     def duplicate_current_line(self):
         """Duplicate the rich selection, or the current logical paragraph."""
@@ -3668,7 +3272,6 @@ class RtfEditorWindow(QMainWindow):
         finally:
             cursor.endEditBlock()
         self.text_area.setTextCursor(cursor)
-
 
     def _logical_char_size(self, char_format):
         displayed = float(char_format.fontPointSize() or 0.0)
@@ -3721,20 +3324,12 @@ class RtfEditorWindow(QMainWindow):
             self.visual_editor, target_percent, "_visual_zoom_device"
         )
 
-
     def _unzoomed_visual_document(self):
         # The zoom paint device belongs to the live editor layout. A clone gets
         # its own unscaled layout and therefore serialises logical formatting.
         clone = self.visual_editor.document().clone(self)
         clone.documentLayout().setPaintDevice(None)
         return clone
-
-
-
-
-
-
-
 
     def toggle_format_bar(self, checked):
         """Compatibility no-op: formatting is permanently part of Home."""
@@ -3824,7 +3419,6 @@ class RtfEditorWindow(QMainWindow):
     def insert_time(self):
         """Insert the current system-local time at the caret (Ctrl+:)."""
         self.insert_text_at_cursor(self.formatted_system_time())
-
 
     def show_replace_dialog(self):
         """Show one reusable, modeless Replace dialog."""
@@ -4091,7 +3685,6 @@ class RtfEditorWindow(QMainWindow):
         self.set_word_wrap_mode()
         self.save_preferences()
 
-
     def toggle_search_bar(self, checked):
         """Toggle the bottom Find bar; Ctrl+F invokes this same action."""
         self.show_search_bar = bool(checked)
@@ -4125,7 +3718,6 @@ class RtfEditorWindow(QMainWindow):
         self.setStyleSheet("")
         self.apply_editor_canvas_theme(update_action=True)
 
-    # ---------- Printing / Help ----------
     def show_page_setup_dialog(self):
         """Configure compact left, centre and right header/footer fields."""
         dialog = QDialog(self)
@@ -4288,7 +3880,6 @@ class RtfEditorWindow(QMainWindow):
                 text,
             )
 
-
     def current_print_document(self):
         """Return a print clone with only automatic/unset body text normalized black.
 
@@ -4309,10 +3900,6 @@ class RtfEditorWindow(QMainWindow):
             block=block.next()
         return document
 
-
-
-
-
     def export_pdf(self):
         default_name=os.path.splitext(self.file_path)[0]+".pdf" if self.file_path else os.path.join(os.path.expanduser("~"),"Untitled.pdf")
         file_path,_=QFileDialog.getSaveFileName(self,"Export PDF",default_name,"PDF Documents (*.pdf)")
@@ -4324,7 +3911,7 @@ class RtfEditorWindow(QMainWindow):
             printer=QPrinter(QPrinter.PrinterMode.ScreenResolution); printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat); printer.setOutputFileName(temporary)
             if not self._print_document_with_header_footer(printer): return False
             if not os.path.isfile(temporary) or os.path.getsize(temporary)<=0: raise RuntimeError("The PDF print engine produced no output.")
-            os.replace(temporary,file_path); temporary=None; fsync_directory(parent); self.statusBar().showMessage(f"Exported PDF to {file_path}",4000); return True
+            os.replace(temporary,file_path); temporary=None; fsync_directory(parent); self._show_status_message(f"Exported PDF to {file_path}",4000); return True
         except (OSError,RuntimeError) as exc:
             QMessageBox.critical(self,"PDF Export Error",f"Could not export PDF:\n{exc}"); return False
         finally:
@@ -4334,7 +3921,6 @@ class RtfEditorWindow(QMainWindow):
             if temporary and os.path.exists(temporary):
                 try: os.remove(temporary)
                 except OSError: pass
-
 
     def _print_document_with_header_footer(self, printer):
         """Paginate the rendered rich document with Nuxpad-style metadata bands."""
@@ -4438,14 +4024,12 @@ class RtfEditorWindow(QMainWindow):
                 except OSError:
                     pass
 
-
     def print_document(self):
         # Nuxpad lesson: ScreenResolution keeps QTextDocument pagination/font metrics
         # aligned with Qt's printer/PDF paint engine while remaining vector/searchable.
         printer=QPrinter(QPrinter.PrinterMode.ScreenResolution); dialog=QPrintDialog(printer,self); dialog.setWindowTitle("Print")
         if dialog.exec()!=QDialog.DialogCode.Accepted: return False
         return self._print_document_with_header_footer(printer)
-
 
     def _format_file_size(self, size):
         size = int(size)
@@ -4488,7 +4072,7 @@ class RtfEditorWindow(QMainWindow):
         else: rows=(("Name","Untitled.rtf"),("Location","Not saved yet"))
         add_group("File",rows)
         text=self.text_area.toPlainText(); compatibility="Fully supported by Rico Plus's RTF subset" if not self.rtf_compatibility_warnings else "; ".join(self.rtf_compatibility_warnings)
-        add_group("Document",(("Format","Rich Text Format (RTF)"),("Lines",max(1,self.text_area.document().blockCount())),("Characters",len(text)),("Unsaved changes","No" if self.content_saved else "Yes"),("Lock Editor","Yes" if self.view_only else "No"),("Compatibility",compatibility)))
+        add_group("Document",(("Format","Rich Text Format (RTF)"),("Lines",max(1,self.text_area.document().blockCount())),("Characters",len(text)),("Unsaved changes","No" if self.content_saved else "Yes"),("Locked Mode","Yes" if self.view_only else "No"),("Compatibility",compatibility)))
         if self.rtf_document_properties:
             add_group("Preserved RTF page properties",tuple((k,str(v)) for k,v in sorted(self.rtf_document_properties.items())))
         buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Ok,dialog); buttons.accepted.connect(dialog.accept); layout.addWidget(buttons); dialog.exec()
@@ -4636,7 +4220,7 @@ class RtfEditorWindow(QMainWindow):
             path=os.path.abspath(os.path.join(base,href))
         if os.path.exists(path):
             return self._open_host_target(path,local=True)
-        self.statusBar().showMessage("The linked file could not be found.",4000)
+        self._show_status_message("The linked file could not be found.",4000)
         return False
 
     def open_github_repository(self):
@@ -4661,8 +4245,8 @@ class RtfEditorWindow(QMainWindow):
         add_page("Welcome to Rico Plus","<p>Rico Plus combines a workspace dashboard with a Rich Text Format (.rtf) editor. The editor uses one Ribbon with five tabs: <b>File, Home, Insert, View and Help</b>, with Home open by default.</p><p>Hover a command for its name/shortcut. Use <b>Ctrl+Tab</b> and <b>Ctrl+Shift+Tab</b> to move between tabs. Double-click a tab title to collapse Ribbon controls; click a tab title once to reveal them again.</p>")
         add_page("Create, open and save","<p><b>File</b> contains New RTF File, Open / Manage Workspace, Save, Save As, Print, Export PDF and file-management commands. Rico Plus edits RTF only, so there is no private document format to choose.</p><p>Files opened by the operating system outside the active workspace remain external and are not copied or registered.</p>")
         add_page("Format rich text","<p><b>Home</b> provides font face, size, paragraph style, emphasis, colours/highlights, bullets, indentation, alignment, paragraph settings and line spacing.</p><p><b>Insert</b> contains tables, links, symbols, images, horizontal rules, dates and times. Character formatting operates on the selection, or on the current word when there is no selection; whitespace changes the typing format for future text.</p>")
-        add_page("Find and navigate","<p><b>Ctrl+F</b> toggles Find. Use <b>F3</b> for the next result and <b>Shift+F3</b> for the previous result. Home also provides Find and Replace.</p><p>Lock Editor protects a document from accidental changes while navigation, copying and search remain available.</p>")
-        add_page("View and reading comfort","<p><b>View</b> controls Lock Editor, Word Wrap, Dark Editor, zoom, status bar and document defaults.</p><p>Ctrl+mouse-wheel zooms the document. Dark Editor changes only the editing surface; App Theme controls the rest of Rico Plus where packaged theme support is available.</p>")
+        add_page("Find and navigate","<p><b>Ctrl+F</b> toggles Find. Use <b>F3</b> for the next result and <b>Shift+F3</b> for the previous result. Home also provides Find and Replace.</p><p>Locked Mode protects a document from accidental changes while navigation, copying and search remain available.</p>")
+        add_page("View and reading comfort","<p><b>View</b> controls Locked Mode, Word Wrap, Dark Editor, zoom, status bar and document defaults.</p><p>Ctrl+mouse-wheel zooms the document. Dark Editor changes only the editing surface; App Theme controls the rest of Rico Plus where packaged theme support is available.</p>")
         add_page("Make it yours!","<p>Rico Plus uses the Ribbon exclusively. Double-click any Ribbon tab to collapse it, and choose either Rico Icons Classic or Rico Icons New from App Theme.</p><p>New Document Defaults controls the exact font, size, style, line spacing and alignment used by future new documents.</p>")
         shortcuts_button=QPushButton("Open Keyboard Shortcuts…",wizard); shortcuts_button.setAutoDefault(False); shortcuts_button.clicked.connect(self.show_keyboard_shortcuts_dialog)
         add_page("RTF interoperability and help","<p>Rico Plus writes standards-based RTF intended to interoperate with other RTF applications. Bullet lists are stored with standard RTF list tables/overrides rather than Rico Plus-only markers.</p><p>Use <b>F1</b> for the bundled RTF Documentation. Help also provides GitHub, Raise an Issue, Keyboard Shortcuts and About.</p>",shortcuts_button)
@@ -4790,12 +4374,6 @@ class RtfEditorWindow(QMainWindow):
         self.about_dialog = dialog
         dialog.show()
 
-    # ---------- Files ----------
-
-    def update_title(self):
-        prefix="*" if not self.content_saved else ""; name=os.path.basename(self.file_path) if self.file_path else "Untitled.rtf"; suffix=" — Locked" if self.view_only else ""; self.setWindowTitle(f"{prefix}{name}{suffix}")
-
-
     def on_modification_changed(self, _modified):
         if self._loading or self._syncing_editors:
             return
@@ -4803,16 +4381,15 @@ class RtfEditorWindow(QMainWindow):
         self.content_saved = not active_modified
         self.update_title()
 
-
     def update_status_counts(self):
-        if not hasattr(self,"text_area"): return
-        display_path=self.file_path if self.file_path else "Untitled.rtf"; self.path_label.setText(display_path); self.path_label.setToolTip(display_path)
-        self.operation_mode_label.setText("Overwrite" if self.text_area.overwriteMode() else "Insert")
-        cursor=self.text_area.textCursor(); column=cursor.positionInBlock()+1; characters=max(0,self.text_area.document().characterCount()-1)
-        self.counter_label.setText(f"Col: {column}, Char: {characters}")
-        self.zoom_label.setText(f"Zoom: {self.zoom_percent}%")
-        self.path_label.setProperty("rtf_compatibility_warning", bool(self.rtf_compatibility_warnings))
-
+        if not hasattr(self, "text_area"):
+            return
+        self.operation_mode_label.setText(
+            "Overwrite" if self.text_area.overwriteMode() else "Insert"
+        )
+        characters = max(0, self.text_area.document().characterCount() - 1)
+        self.zoom_label.setText(f"{self.zoom_percent}%")
+        self.counter_label.setText(f"Chars {characters:,}")
 
     @staticmethod
     def _content_signature(data):
@@ -4914,20 +4491,13 @@ class RtfEditorWindow(QMainWindow):
             return True
         return False
 
-    # ---------- Document formats and durable file I/O ----------
-
     @staticmethod
     def format_for_path(file_path):
         return "rtf" if Path(file_path).suffix.lower() in RTF_EXTENSIONS else None
 
-
-
-
     def _update_mode_capabilities(self):
         editing=not self.view_only
         self.visual_editor.setAcceptRichText(True); self.visual_editor.setReadOnly(self.view_only)
-        if hasattr(self,"format_ribbon_group"): self.format_ribbon_group.setEnabled(editing)
-        if hasattr(self,"paragraph_ribbon_group"): self.paragraph_ribbon_group.setEnabled(editing)
         self.format_menu.setEnabled(editing)
         for action in self.format_actions: action.setEnabled(editing)
         for widget in self.format_widgets: widget.setEnabled(editing)
@@ -4942,18 +4512,9 @@ class RtfEditorWindow(QMainWindow):
             in_link=editing and self._visual_anchor_cursor() is not None; self.edit_link_action.setEnabled(in_link); self.remove_link_action.setEnabled(in_link)
         self.view_only_action.blockSignals(True); self.view_only_action.setChecked(self.view_only); self.view_only_action.blockSignals(False)
 
-
-
-
-
-
-
     def _document_payload(self, target_format=None):
         if (target_format or self.file_format) != "rtf": raise ValueError("Rico Plus saves RTF documents only.")
         return document_to_rtf_with_properties(self._unzoomed_visual_document(), self.rtf_document_properties)
-
-
-
 
     def _synchronise_after_save(self, payload, *, semantic_signature=None, preserve_warnings=False):
         self._loading=True
@@ -4969,8 +4530,6 @@ class RtfEditorWindow(QMainWindow):
         if not preserve_warnings:
             self.rtf_compatibility_warnings=()
         self._rtf_save_warning_acknowledged=False
-
-
 
     def _write_payload_atomically(self, payload):
         if os.path.islink(self.file_path):
@@ -5015,7 +4574,6 @@ class RtfEditorWindow(QMainWindow):
                 except OSError:
                     pass
 
-
     def new_file(self):
         if not self.check_save_changes(): return False
         self._loading=True
@@ -5023,9 +4581,6 @@ class RtfEditorWindow(QMainWindow):
             self.clear_search_results(); self.visual_editor.clear(); self.file_path=None; self.file_format="rtf"; self.file_encoding="rtf"; self.file_bom=b""; self.file_newline="\n"; self.file_disk_signature=None; self._source_rtf_payload=None; self._source_rtf_semantic_signature=None; self.content_saved=True; self.rtf_compatibility_warnings=(); self.rtf_document_properties={}; self._rtf_save_warning_acknowledged=False; self._view_only_prompt_shown=False; self._visual_document_zoom_percent=100; self.apply_editor_font(); self._apply_visual_document_zoom(self.zoom_percent); self.visual_editor.document().setModified(False)
         finally: self._loading=False
         self.view_only=bool(self.persist_view_only); self._update_mode_capabilities(); self.update_title(); self.update_status_counts(); self.update_formatting_state(); self.visual_editor.setFocus(); return True
-
-
-
 
     def save_and_exit(self):
         """Offer save-and-exit, exit-without-saving, or cancel explicitly."""
@@ -5067,13 +4622,6 @@ class RtfEditorWindow(QMainWindow):
         if Path(file_path).suffix.lower() not in RTF_EXTENSIONS: return False,"Rico Plus edits Rich Text Format (.rtf) documents only."
         return True,""
 
-
-
-
-
-
-
-
     def load_file(self, file_path, check_changes=True, show_error=True):
         if check_changes and not self.check_save_changes(): return False
         is_safe,reason=self.inspect_text_file(file_path)
@@ -5110,9 +4658,8 @@ class RtfEditorWindow(QMainWindow):
                 self._source_rtf_semantic_signature=None
         finally: self._loading=False
         self._update_mode_capabilities(); self.update_title(); self.update_status_counts(); self.update_formatting_state(); self.visual_editor.setFocus()
-        if self.rtf_compatibility_warnings: self.statusBar().showMessage("RTF opened with compatibility warnings. Review File → Properties before saving.",7000)
+        if self.rtf_compatibility_warnings: self._show_status_message("RTF opened with compatibility warnings. Review File → Properties before saving.",7000)
         return True
-
 
     @staticmethod
     def _default_created_file_mode():
@@ -5120,7 +4667,6 @@ class RtfEditorWindow(QMainWindow):
         current_umask = os.umask(0)
         os.umask(current_umask)
         return 0o666 & ~current_umask
-
 
     def save_file(self, check_external_change=True):
         if not self.file_path: return self.save_as_file()
@@ -5230,20 +4776,34 @@ class RtfEditorWindow(QMainWindow):
         self.update_status_counts()
         return True
 
-
-    def save_as_file(self):
-        initial_path=self.file_path or os.path.join(os.path.expanduser("~"),"Untitled.rtf")
-        file_path,_=QFileDialog.getSaveFileName(self,"Save As — Rico Plus",initial_path,"Rich Text Format (*.rtf)")
+    def save_as_file(
+        self,
+        *,
+        initial_path=None,
+        forbidden_paths=(),
+        dialog_title="Save As — Rico Plus",
+        forbidden_message=None,
+    ):
+        initial_path=initial_path or self.file_path or os.path.join(os.path.expanduser("~"),"Untitled.rtf")
+        file_path,_=QFileDialog.getSaveFileName(self,dialog_title,initial_path,"Rich Text Format (*.rtf)")
         if not file_path: return False
         if not Path(file_path).suffix: file_path += ".rtf"
         if Path(file_path).suffix.lower() not in RTF_EXTENSIONS:
             QMessageBox.warning(self,"Unsupported Extension — Rico Plus","Rico Plus saves .rtf documents only."); return False
         candidate = Path(file_path).expanduser().resolve(strict=False)
+        forbidden = {Path(path).expanduser().resolve(strict=False) for path in forbidden_paths}
+        if candidate in forbidden:
+            QMessageBox.warning(
+                self,
+                dialog_title,
+                forbidden_message or "Choose a different filename for this version.",
+            )
+            return False
         validator = getattr(self, "save_as_target_validator", None)
         if callable(validator) and not validator(candidate):
             QMessageBox.warning(
                 self,
-                "Save As — Rico Plus",
+                dialog_title,
                 "That RTF file is already open in another editor page. "
                 "Close it before replacing it with Save As.",
             )
@@ -5255,8 +4815,6 @@ class RtfEditorWindow(QMainWindow):
             return True
         self.file_path,self.file_disk_signature=previous; self._update_mode_capabilities(); self.update_title(); self.update_status_counts(); return False
 
-
-    # ---------- Native drag-and-drop ----------
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls() and any(url.isLocalFile() for url in event.mimeData().urls()):
             event.acceptProposedAction()
@@ -5287,3 +4845,5 @@ class RtfEditorWindow(QMainWindow):
             event.accept()
         else:
             event.ignore()
+
+

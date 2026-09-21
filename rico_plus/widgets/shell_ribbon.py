@@ -8,17 +8,60 @@ controls without reordering, renaming or restyling Ricopad's RTF controls.
 """
 from __future__ import annotations
 
-from PyQt6.QtCore import QEvent, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import (
     QComboBox, QFontComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
-    QScrollArea, QSizePolicy, QTabWidget, QToolButton, QToolTip, QVBoxLayout,
+    QScrollArea, QScroller, QSizePolicy, QTabWidget, QToolButton, QToolTip, QVBoxLayout,
     QWidget,
 )
 
 RIBBON_BUTTON_SIZE = 52
 RIBBON_ICON_SIZE = 32
 RIBBON_FONT_FAMILY_WIDTH = RIBBON_BUTTON_SIZE * 2
+
+
+class RibbonScrollArea(QScrollArea):
+    """Horizontally pannable Ribbon surface without swallowing taps.
+
+    This is the same touch-arbitration contract used by canonical Ricopad:
+    QScroller waits for Qt's platform drag threshold before taking the gesture,
+    so a stationary touchscreen tap continues to activate the child control,
+    while a finger drag pans the Ribbon horizontally.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.viewport().setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents, True)
+        QScroller.grabGesture(
+            self.viewport(), QScroller.ScrollerGestureType.TouchGesture
+        )
+
+    def pan_from_wheel_event(self, event) -> bool:
+        """Translate a wheel event into horizontal Ribbon movement."""
+        bar = self.horizontalScrollBar()
+        if bar.maximum() <= bar.minimum():
+            return False
+        pixel_delta = event.pixelDelta()
+        angle_delta = event.angleDelta()
+        delta = pixel_delta.y() or pixel_delta.x()
+        if not delta:
+            delta = angle_delta.y() or angle_delta.x()
+            if delta:
+                notches = int(delta / 120)
+                if notches == 0:
+                    notches = 1 if delta > 0 else -1
+                delta = notches * max(48, bar.singleStep() * 3)
+        if not delta:
+            return False
+        bar.setValue(bar.value() - int(delta))
+        event.accept()
+        return True
+
+    def wheelEvent(self, event) -> None:
+        if self.pan_from_wheel_event(event):
+            return
+        super().wheelEvent(event)
 
 
 class ShellRibbon(QWidget):
@@ -43,8 +86,13 @@ class ShellRibbon(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._ribbon_pages: list[RibbonScrollArea] = []
         self.tabs = QTabWidget(self)
         self.tabs.setObjectName("ricoPlusShellRibbon")
+        self.tabs.setMinimumWidth(0)
+        self.tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.tabs.setDocumentMode(True)
         self.tabs.setMovable(False)
         self.tabs.setTabsClosable(False)
@@ -83,6 +131,7 @@ class ShellRibbon(QWidget):
         self.line_spacing_combo.currentIndexChanged.connect(self._emit_line_spacing)
 
         self._build_pages()
+        QTimer.singleShot(0, self._sync_ribbon_page_heights)
         self.tabs.setCurrentIndex(next((i for i in range(self.tabs.count()) if self.tabs.tabText(i) == "Home"), 0))
 
     def _a(self, name: str) -> QAction:
@@ -106,20 +155,57 @@ class ShellRibbon(QWidget):
         return f"{clean} — {' / '.join(shortcuts)}" if shortcuts else clean
 
     def _page(self, label: str):
-        scroll = QScrollArea(self.tabs)
+        # Rico's grouped two-row Ribbon needs a real horizontally scrollable
+        # surface.  Do not substitute QToolBar overflow: custom group widgets
+        # do not transfer correctly into its extension popup.
+        scroll = RibbonScrollArea(self.tabs)
         scroll.setObjectName(f"ricoPlusRibbon{label}Page")
+        scroll.setMinimumWidth(0)
+        scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         body = QWidget(scroll)
+        body.setMinimumWidth(0)
         row = QHBoxLayout(body)
         row.setContentsMargins(6, 4, 6, 6)
         row.setSpacing(6)
         row.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         scroll.setWidget(body)
+        scroll.horizontalScrollBar().rangeChanged.connect(
+            lambda _minimum, _maximum, page=scroll: self._sync_ribbon_page_height(page)
+        )
+        self._ribbon_pages.append(scroll)
         self.tabs.addTab(scroll, label)
         return row
+
+    def _sync_ribbon_page_height(self, scroll: RibbonScrollArea) -> None:
+        """Reserve the scrollbar inside the Ribbon's own geometry.
+
+        At narrow widths the horizontal bar must consume Ribbon height rather
+        than being painted into the editor area below it.
+        """
+        body = scroll.widget()
+        if body is None:
+            return
+        body.adjustSize()
+        content_height = max(body.minimumSizeHint().height(), body.sizeHint().height())
+        bar = scroll.horizontalScrollBar()
+        bar_height = bar.sizeHint().height() if bar.maximum() > bar.minimum() else 0
+        page_height = max(1, content_height + bar_height + (2 * scroll.frameWidth()))
+        if scroll.minimumHeight() != page_height or scroll.maximumHeight() != page_height:
+            scroll.setMinimumHeight(page_height)
+            scroll.setMaximumHeight(page_height)
+            scroll.updateGeometry()
+            self.tabs.updateGeometry()
+            self.updateGeometry()
+
+    def _sync_ribbon_page_heights(self) -> None:
+        if self._collapsed:
+            return
+        for scroll in tuple(self._ribbon_pages):
+            self._sync_ribbon_page_height(scroll)
 
     def _group(self, layout, title: str):
         frame = QFrame(self.tabs)
@@ -239,19 +325,19 @@ class ShellRibbon(QWidget):
         self.line_spacing_combo.setToolTip("Line Spacing — 1.0 Ctrl+1; 1.15 Ctrl+2; 1.5 Ctrl+3; 2.0 Ctrl+4")
         self._selector(g, self.line_spacing_combo, 1, 3, "Line Spacing", RIBBON_BUTTON_SIZE)
         g = self._group(p, "Advanced")
-        for n, r, c in (("clear_formatting_action", 0, 0), ("replace_action", 0, 1), ("duplicate_line_action", 1, 0), ("delete_line_action", 1, 1)):
+        for n, r, c in (("search_bar_action", 0, 0), ("replace_action", 0, 1), ("duplicate_line_action", 1, 0), ("delete_line_action", 1, 1)):
             self._button(g, n, r, c)
         p.addStretch(1)
 
         p = self._page("Insert")
-        g = self._group(p, "Classics")
-        for n, r, c in (("date_time_action", 0, 0), ("symbol_action", 0, 1), ("date_action", 1, 0), ("time_action", 1, 1)):
-            self._button(g, n, r, c)
         g = self._group(p, "Links & Images")
-        for n, r, c in (("remove_link_action", 0, 0), ("image_action", 0, 1), ("link_action", 1, 0), ("edit_link_action", 1, 1)):
+        for n, r, c in (("edit_link_action", 0, 0), ("remove_link_action", 0, 1), ("link_action", 1, 0), ("image_action", 1, 1)):
             self._button(g, n, r, c)
-        g = self._group(p, "Tables & Lines")
-        for n, r, c in (("table_delete_action", 0, 0), ("table_column_left_action", 0, 1), ("table_column_right_action", 0, 2), ("table_delete_column_action", 0, 3), ("table_action", 1, 0), ("table_row_above_action", 1, 1), ("table_row_below_action", 1, 2), ("table_delete_row_action", 1, 3), ("rule_action", 1, 4)):
+        g = self._group(p, "Tables")
+        for n, r, c in (("table_delete_action", 0, 0), ("table_column_left_action", 0, 1), ("table_column_right_action", 0, 2), ("table_delete_column_action", 0, 3), ("table_action", 1, 0), ("table_row_above_action", 1, 1), ("table_row_below_action", 1, 2), ("table_delete_row_action", 1, 3)):
+            self._button(g, n, r, c)
+        g = self._group(p, "Classics")
+        for n, r, c in (("date_action", 0, 0), ("time_action", 0, 1), ("clear_formatting_action", 0, 2), ("date_time_action", 1, 0), ("symbol_action", 1, 1), ("rule_action", 1, 2)):
             self._button(g, n, r, c)
         p.addStretch(1)
 
@@ -261,29 +347,31 @@ class ShellRibbon(QWidget):
             ("fullscreen_action", 0, 0),
             ("sidebar_action", 0, 1),
             ("status_bar_action", 0, 2),
-            ("zoom_in_action", 1, 0),
+            ("zoom_out_action", 1, 0),
             ("zoom_reset_action", 1, 1),
-            ("zoom_out_action", 1, 2),
+            ("zoom_in_action", 1, 2),
         ):
             self._button(g, n, r, c)
 
         g = self._group(p, "Editor Settings")
         for n, r, c in (
-            ("search_bar_action", 0, 0),
+            ("file_header_action", 0, 0),
             ("tab_width_action", 0, 1),
             ("default_font_action", 0, 2),
             ("word_wrap_action", 1, 0),
-            ("editor_canvas_theme_action", 1, 1),
+            ("collapsed_mode_action", 1, 1),
             ("view_only_action", 1, 2),
         ):
             self._button(g, n, r, c)
 
         g = self._group(p, "Theme Settings")
         for n, r, c in (
-            ("theme_light_action", 0, 0),
+            ("editor_canvas_theme_action", 0, 0),
             ("icon_classic_action", 0, 1),
-            ("theme_dark_action", 1, 0),
-            ("icon_new_action", 1, 1),
+            ("icon_new_action", 0, 2),
+            ("theme_system_action", 1, 0),
+            ("theme_light_action", 1, 1),
+            ("theme_dark_action", 1, 2),
         ):
             self._button(g, n, r, c)
 
@@ -307,6 +395,7 @@ class ShellRibbon(QWidget):
         for n, r, c in (("docs_action", 0, 0), ("quick_start_action", 0, 1), ("shortcuts_action", 1, 0), ("about_action", 1, 1)):
             self._button(g, n, r, c)
         p.addStretch(1)
+        QTimer.singleShot(0, self._sync_ribbon_page_heights)
 
 
     def refresh_theme(self) -> None:
@@ -399,6 +488,7 @@ class ShellRibbon(QWidget):
             self.tabs.setMinimumHeight(self._expanded_minimum_height)
             if current is not None:
                 current.setVisible(True)
+            QTimer.singleShot(0, self._sync_ribbon_page_heights)
         self.tabs.updateGeometry()
         if emit:
             self.collapsed_changed.emit(collapsed)
@@ -432,4 +522,8 @@ class ShellRibbon(QWidget):
                     QToolTip.showText(obj.mapToGlobal(obj.rect().bottomLeft()), obj.toolTip(), obj, obj.rect(), 7000)
             elif event.type() == QEvent.Type.Leave:
                 QToolTip.hideText()
+            elif event.type() == QEvent.Type.Wheel:
+                scroll = self.tabs.currentWidget()
+                if isinstance(scroll, RibbonScrollArea) and scroll.pan_from_wheel_event(event):
+                    return True
         return super().eventFilter(obj, event)

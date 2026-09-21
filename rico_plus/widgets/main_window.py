@@ -1,13 +1,19 @@
 # Rico Plus
 # Copyright (C) 2026 Bruno Machado
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Workspace shell for the Ribbon-only Rico Plus RTF editor."""
+"""Main application window for Rico Plus.
+
+The workspace/lifecycle scaffold follows authoritative Plus implementation; RTF commands are
+provided by the active EditorPage, which is the sole managed-editor boundary.
+"""
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from PyQt6.QtCore import QTimer, Qt
@@ -52,6 +58,7 @@ from rico_plus.services.filesystem_watcher import FilesystemWatcher
 from rico_plus.services.project_registry import ProjectRegistry
 from rico_plus.services.runtime_paths import RuntimePaths
 from rico_plus.widgets.about_dialog import AboutDialog
+from rico_plus.widgets.closing_dialog import ClosingDialog
 from rico_plus.widgets.editor_page import EditorPage
 from rico_plus.widgets.navigation import NavigationWidget, SIDEBAR_MINIMUM_WIDTH
 from rico_plus.widgets.projects_dialog import ProjectsDialog
@@ -60,8 +67,11 @@ from rico_plus.widgets.rico_theme import apply_theme, effective_scheme
 from rico_plus.widgets.shell_ribbon import ShellRibbon
 
 
+SHUTDOWN_PROFILE_ENV = "RICO_PLUS_PROFILE_SHUTDOWN"
+
+
 class MainWindow(QMainWindow):
-    """Own workspaces and transient OS-open sessions around Ricopad's RTF core."""
+    """Assemble the repository, services, controllers and persistent views."""
 
     def __init__(
         self,
@@ -98,6 +108,8 @@ class MainWindow(QMainWindow):
             self.library_root, self.repository, self.states, self.splitter
         )
         self.stack = QStackedWidget(self.splitter)
+        self.stack.setMinimumWidth(0)
+        self.splitter.setMinimumWidth(0)
         self.splitter.addWidget(self.navigation)
         self.splitter.addWidget(self.stack)
         self.splitter.setStretchFactor(0, 0)
@@ -112,14 +124,16 @@ class MainWindow(QMainWindow):
         # across the whole window, with the sidebar/content splitter below it.
         # Document editors supply capabilities/state, never application chrome.
         self.central_host = QWidget(self)
+        self.central_host.setMinimumSize(0, 0)
         self.central_layout = QVBoxLayout(self.central_host)
         self.central_layout.setContentsMargins(0, 0, 0, 0)
         self.central_layout.setSpacing(0)
-        self.ribbon_host = QWidget(self.central_host)
-        self.ribbon_layout = QHBoxLayout(self.ribbon_host)
-        self.ribbon_layout.setContentsMargins(0, 0, 0, 0)
-        self.ribbon_layout.setSpacing(0)
-        self.central_layout.addWidget(self.ribbon_host)
+        self.tabbed_container = QWidget(self.central_host)
+        self.tabbed_container.setMinimumWidth(0)
+        self.tabbed_layout = QVBoxLayout(self.tabbed_container)
+        self.tabbed_layout.setContentsMargins(0, 0, 0, 0)
+        self.tabbed_layout.setSpacing(0)
+        self.central_layout.addWidget(self.tabbed_container)
         self.central_layout.addWidget(self.splitter, 1)
         self.setCentralWidget(self.central_host)
 
@@ -138,6 +152,7 @@ class MainWindow(QMainWindow):
             self.editor_manager,
             self.desktop_launcher,
             watcher=self.watcher,
+            config_directory=self.config.path.parent,
             parent_widget=self,
             parent=self,
         )
@@ -151,6 +166,9 @@ class MainWindow(QMainWindow):
         self.about_dialog: AboutDialog | None = None
         self.shortcuts_dialog: ShortcutsDialog | None = None
         self.quick_tour_dialog: QWizard | None = None
+        # Temporary F10 viewing mode. The user's independent visibility choices
+        # are captured and restored; Focused Mode does not rewrite them.
+        self._collapsed_mode_restore: dict[str, object] | None = None
 
         self._status_label = QLabel("Ready.")
         status = QStatusBar(self)
@@ -158,7 +176,7 @@ class MainWindow(QMainWindow):
         self.setStatusBar(status)
 
         self._build_menu_bar()
-        self._create_shell_ribbon()
+        self._create_tabbed_toolbar()
         self._connect_signals()
         self._restore_window_state()
         self._apply_active_project_state()
@@ -166,7 +184,7 @@ class MainWindow(QMainWindow):
         self.watcher.start(initial_scan=True)
         self._update_action_states()
 
-    def _action(
+    def _command(
         self,
         text: str,
         slot,
@@ -186,35 +204,35 @@ class MainWindow(QMainWindow):
         return action
 
     def _build_menu_bar(self) -> None:
-        self.new_action = self._action(
+        self.new_action = self._command(
             "New RTF File…", self._new_rtf_file, QKeySequence.StandardKey.New
         )
-        self.new_window_action = self._action(
-            "New Window", self._new_window
+        self.new_window_action = self._command(
+            "New Window…", self._new_window, "Ctrl+Alt+Shift+N"
         )
-        self.new_folder_action = self._action(
+        self.new_folder_action = self._command(
             "New Folder…", self._new_folder, "Ctrl+Shift+N"
         )
-        self.dashboard_action = self._action(
+        self.dashboard_action = self._command(
             "Show Dashboard", self.editor_manager.show_dashboard, "Ctrl+W"
         )
-        self.manage_workspaces_action = self._action(
-            "Manage Workspaces…", self._show_projects,
+        self.manage_workspaces_action = self._command(
+            "Open / Manage Workspaces…", self._show_projects,
             QKeySequence.StandardKey.Open,
         )
-        self.refresh_action = self._action(
-            "Refresh Workspace", self._refresh_workspace
+        self.refresh_action = self._command(
+            "Refresh Workspace", self._refresh_workspace, "Ctrl+Shift+F5"
         )
-        self.exit_action = self._action(
+        self.exit_action = self._command(
             "Exit", self.close, QKeySequence.StandardKey.Quit
         )
 
-        self.list_action = self._action(
+        self.list_action = self._command(
             "List View",
             lambda: self.editor_manager.set_view_mode("list"),
             checkable=True,
         )
-        self.grid_action = self._action(
+        self.grid_action = self._command(
             "Grid View",
             lambda: self.editor_manager.set_view_mode("grid"),
             checkable=True,
@@ -223,16 +241,16 @@ class MainWindow(QMainWindow):
         dashboard_group.setExclusive(True)
         dashboard_group.addAction(self.list_action)
         dashboard_group.addAction(self.grid_action)
-        self.toggle_dashboard_view_action = self._action(
+        self.toggle_dashboard_view_action = self._command(
             "Toggle List/Grid View",
             self.editor_manager.dashboard.toggle_view_mode,
             "Ctrl+Alt+Shift+D",
         )
-        self.sidebar_action = self._action(
+        self.sidebar_action = self._command(
             "Show Sidebar", self._toggle_sidebar, "F9", checkable=True
         )
         self.sidebar_action.setChecked(True)
-        self.status_bar_action = self._action(
+        self.status_bar_action = self._command(
             "Show Status", self._toggle_status_bar,
             "Ctrl+Alt+Shift+S", checkable=True,
         )
@@ -240,16 +258,16 @@ class MainWindow(QMainWindow):
             bool(self.config.get("show_status_bar", True))
         )
         self.statusBar().setVisible(self.status_bar_action.isChecked())
-        self.fullscreen_action = self._action(
+        self.fullscreen_action = self._command(
             "Full Screen", self._toggle_fullscreen, "F11", checkable=True
         )
 
-        self.previous_file_action = self._action(
+        self.previous_file_action = self._command(
             "Previous File",
             lambda: self.navigation.navigate_adjacent_document(-1),
             "Ctrl+Up",
         )
-        self.next_file_action = self._action(
+        self.next_file_action = self._command(
             "Next File",
             lambda: self.navigation.navigate_adjacent_document(1),
             "Ctrl+Down",
@@ -270,7 +288,7 @@ class MainWindow(QMainWindow):
             ("dark", "Dark"),
             ("light", "Light"),
         ):
-            action = self._action(
+            action = self._command(
                 label,
                 lambda _checked=False, selected=value:
                     self._set_theme(selected),
@@ -289,7 +307,7 @@ class MainWindow(QMainWindow):
             ("classic", "Rico Icons Classic"),
             ("new", "Rico Icons New"),
         ):
-            action = self._action(
+            action = self._command(
                 label,
                 lambda _checked=False, selected=value:
                     self._set_icon_set(selected),
@@ -307,7 +325,7 @@ class MainWindow(QMainWindow):
             ("dashboard", "Dashboard"),
             ("last_file", "Last File"),
         ):
-            action = self._action(
+            action = self._command(
                 label,
                 lambda _checked=False, selected=value:
                     self._set_launch_screen(selected),
@@ -325,7 +343,7 @@ class MainWindow(QMainWindow):
             ("active_window", "Open on Active Window"),
             ("new_window", "Open on New Window"),
         ):
-            action = self._action(
+            action = self._command(
                 label,
                 lambda _checked=False, selected=value:
                     self._set_drop_mode(selected),
@@ -335,22 +353,22 @@ class MainWindow(QMainWindow):
             drop_group.addAction(action)
             self.drop_actions[value] = action
 
-        self.shortcuts_action = self._action(
+        self.shortcuts_action = self._command(
             "Keyboard Shortcuts", self._show_shortcuts, "Ctrl+Shift+/"
         )
-        self.docs_action = self._action(
+        self.docs_action = self._command(
             "Documentation", self._open_documentation,
             QKeySequence.StandardKey.HelpContents,
         )
-        self.github_action = self._action(
+        self.github_action = self._command(
             "GitHub Repository",
             lambda: self.desktop_launcher.open_url(GITHUB_URL),
         )
-        self.issue_action = self._action(
+        self.issue_action = self._command(
             "Raise an Issue",
             lambda: self.desktop_launcher.open_url(ISSUES_URL),
         )
-        self.about_action = self._action(
+        self.about_action = self._command(
             "About Rico Plus", self._show_about_dialog
         )
         self.about_action.setMenuRole(QAction.MenuRole.AboutRole)
@@ -365,130 +383,132 @@ class MainWindow(QMainWindow):
         bar.show()
         self._refresh_action_icons()
 
-    def _engine(self):
+    def _editor_action(self, name: str):
         page = self._current_page()
-        return page.engine if page is not None else None
+        return page.editor_action(name) if page is not None else None
 
-    def _engine_action(self, name: str):
-        engine = self._engine()
-        action = getattr(engine, name, None) if engine is not None else None
-        return action if isinstance(action, QAction) else None
-
-    def _trigger_engine_action(self, name: str) -> None:
-        action = self._engine_action(name)
-        if action is not None and action.isEnabled():
-            action.trigger()
+    def _trigger_editor_action(self, name: str) -> None:
+        page = self._current_page()
+        if page is not None:
+            page.trigger_editor_action(name)
         self._sync_editor_actions()
 
-    def _engine_call(self, method: str, *args) -> None:
-        engine = self._engine()
-        if engine is not None:
-            getattr(engine, method)(*args)
+    def _editor_call(self, method: str, *args) -> None:
+        page = self._current_page()
+        if page is not None:
+            callback = getattr(page, method, None)
+            if callable(callback):
+                callback(*args)
+            else:
+                page.call_editor(method, *args)
         self._sync_editor_actions()
 
-    def _proxy(self, text: str, engine_action: str, shortcut=None, *, checkable=False) -> QAction:
-        return self._action(
+    def _editor_command(self, text: str, editor_action: str, shortcut=None, *, checkable=False) -> QAction:
+        return self._command(
             text,
-            lambda _checked=False, name=engine_action: self._trigger_engine_action(name),
+            lambda _checked=False, name=editor_action: self._trigger_editor_action(name),
             shortcut,
             checkable=checkable,
         )
 
     def _build_editor_shell_actions(self) -> None:
-        self.save_action = self._action("Save", self._save_current, QKeySequence.StandardKey.Save)
-        self.save_as_action = self._action("Save As…", lambda: self._engine_call("save_as_file"))
-        self.save_new_action = self._action("Save and New", lambda: self._save_and_new(self._current_page()) if self._current_page() else None, "Ctrl+Shift+S")
-        self.save_dashboard_action = self._action("Save and Dashboard", lambda: self._save_and_dashboard(self._current_page()) if self._current_page() else None, "Ctrl+Shift+W")
-        self.save_exit_action = self._action("Save and Exit", lambda: self._save_and_exit(self._current_page()) if self._current_page() else None, "Ctrl+Shift+Q")
-        self.properties_action = self._action("Properties", lambda: self._engine_call("show_properties_dialog"), "F4")
-        self.external_editor_action = self._action("Open in External Editor", self._open_current_external, "Ctrl+Shift+E")
-        self.rename_file_action = self._action("Rename…", self._rename_current, "F2")
-        self.delete_file_action = self._action("Delete File", self._delete_current_file)
-        self.duplicate_action = self._action("Duplicate File", self._duplicate_current, "Ctrl+Shift+D")
-        self.open_document_folder_action = self._action("Open Containing Folder", self._open_current_document_folder, "Ctrl+Shift+O")
-        self.print_action = self._action("Print…", lambda: self._engine_call("print_document"), QKeySequence.StandardKey.Print)
-        self.export_pdf_action = self._action("Export PDF…", lambda: self._engine_call("export_pdf"), "Ctrl+Shift+P")
-        self.page_setup_action = self._action("Page Setup…", lambda: self._engine_call("show_page_setup_dialog"))
+        self.save_action = self._command("Save", self._save_current, QKeySequence.StandardKey.Save)
+        self.save_as_action = self._command("Save As…", lambda: self._editor_call("save_as_file"))
+        self.save_new_action = self._command("Save and New", lambda: self._save_and_new(self._current_page()) if self._current_page() else None, "Ctrl+Shift+S")
+        self.save_dashboard_action = self._command("Save and Dashboard", lambda: self._save_and_dashboard(self._current_page()) if self._current_page() else None, "Ctrl+Shift+W")
+        self.save_exit_action = self._command("Save and Exit", lambda: self._save_and_exit(self._current_page()) if self._current_page() else None, "Ctrl+Shift+Q")
+        self.properties_action = self._command("Properties", lambda: self._editor_call("show_properties_dialog"), "F4")
+        self.external_editor_action = self._command("Open in External Editor", self._open_current_external, "Ctrl+Shift+E")
+        self.rename_file_action = self._command("Rename…", self._rename_current, "F2")
+        self.delete_file_action = self._command("Delete File", self._delete_current_file)
+        self.duplicate_action = self._command("Duplicate File", self._duplicate_current, "Ctrl+Shift+D")
+        self.open_document_folder_action = self._command("Open Containing Folder", self._open_current_document_folder, "Ctrl+Shift+O")
+        self.print_action = self._command("Print…", lambda: self._editor_call("print_document"), QKeySequence.StandardKey.Print)
+        self.export_pdf_action = self._command("Export PDF…", lambda: self._editor_call("export_pdf"), "Ctrl+Shift+P")
+        self.page_setup_action = self._command("Page Setup…", lambda: self._editor_call("show_page_setup_dialog"))
 
-        self.undo_action=self._proxy("Undo","undo_action",QKeySequence.StandardKey.Undo)
-        self.redo_action=self._proxy("Redo","redo_action","Ctrl+Y")
-        self.cut_action=self._proxy("Cut","cut_action",QKeySequence.StandardKey.Cut)
-        self.copy_action=self._proxy("Copy","copy_action",QKeySequence.StandardKey.Copy)
-        self.paste_action=self._proxy("Paste","paste_action",QKeySequence.StandardKey.Paste)
-        self.paste_plain_action=self._proxy("Paste Plain Text","paste_plain_action","Ctrl+Shift+V")
-        self.delete_text_action=self._proxy("Delete","delete_text_action",QKeySequence.StandardKey.Delete)
-        self.duplicate_line_action=self._proxy("Duplicate Line / Selection","duplicate_line_action","Ctrl+D")
-        self.delete_line_action=self._proxy("Delete Line","delete_line_action","Ctrl+Shift+K")
-        self.select_all_action=self._proxy("Select All","select_all_action",QKeySequence.StandardKey.SelectAll)
-        self.search_bar_action=self._proxy("Find Bar","search_bar_action",QKeySequence.StandardKey.Find,checkable=True)
-        self.replace_action=self._proxy("Find and Replace…","replace_action","Ctrl+H")
+        self.undo_action=self._editor_command("Undo","undo_action",QKeySequence.StandardKey.Undo)
+        self.redo_action=self._editor_command("Redo","redo_action","Ctrl+Y")
+        self.cut_action=self._editor_command("Cut","cut_action",QKeySequence.StandardKey.Cut)
+        self.copy_action=self._editor_command("Copy","copy_action",QKeySequence.StandardKey.Copy)
+        self.paste_action=self._editor_command("Paste","paste_action",QKeySequence.StandardKey.Paste)
+        self.paste_plain_action=self._editor_command("Paste Plain Text","paste_plain_action","Ctrl+Shift+V")
+        self.delete_text_action=self._editor_command("Delete","delete_text_action",QKeySequence.StandardKey.Delete)
+        self.duplicate_line_action=self._editor_command("Duplicate Line / Selection","duplicate_line_action","Ctrl+D")
+        self.delete_line_action=self._editor_command("Delete Line","delete_line_action","Ctrl+Shift+K")
+        self.select_all_action=self._editor_command("Select All","select_all_action",QKeySequence.StandardKey.SelectAll)
+        self.search_bar_action=self._editor_command("Find Bar","search_bar_action",QKeySequence.StandardKey.Find,checkable=True)
+        self.replace_action=self._editor_command("Find and Replace…","replace_action","Ctrl+H")
 
-        self.font_dialog_action=self._proxy("Font…","font_dialog_action","Ctrl+Alt+Shift+F")
-        self.increase_font_size_action=self._proxy("Increase Font Size","increase_font_size_action")
-        self.decrease_font_size_action=self._proxy("Decrease Font Size","decrease_font_size_action")
-        self.text_colour_action=self._proxy("Text Colour…","text_colour_action","Ctrl+Alt+Shift+C")
-        self.highlight_colour_action=self._proxy("Highlight Colour…","highlight_colour_action","Ctrl+Alt+Shift+H")
-        self.clear_highlight_action=self._proxy("Clear Highlight","clear_highlight_action")
-        self.bold_action=self._proxy("Bold","bold_action",QKeySequence.StandardKey.Bold,checkable=True)
-        self.italic_action=self._proxy("Italic","italic_action",QKeySequence.StandardKey.Italic,checkable=True)
-        self.underline_action=self._proxy("Underline","underline_action",QKeySequence.StandardKey.Underline,checkable=True)
-        self.strike_action=self._proxy("Strikethrough","strike_action","Ctrl+Shift+X",checkable=True)
-        self.superscript_action=self._proxy("Superscript","superscript_action","Ctrl+.",checkable=True)
-        self.subscript_action=self._proxy("Subscript","subscript_action","Ctrl+,",checkable=True)
-        self.bullet_action=self._proxy("Bullet List","bulleted_list_action","Ctrl+5",checkable=True)
-        self.indent_action=self._proxy("Indent","increase_indent_action","Ctrl+]")
-        self.outdent_action=self._proxy("Outdent","decrease_indent_action","Ctrl+[")
-        self.paragraph_action=self._proxy("Paragraph…","paragraph_action","Ctrl+Alt+Shift+P")
-        self.clear_formatting_action=self._proxy("Clear Formatting","clear_formatting_action","Ctrl+Space")
-        self.alignment_left_action=self._action("Left",lambda:self._set_alignment(Qt.AlignmentFlag.AlignLeft),"Ctrl+L",checkable=True)
-        self.alignment_center_action=self._action("Centre",lambda:self._set_alignment(Qt.AlignmentFlag.AlignHCenter),"Ctrl+E",checkable=True)
-        self.alignment_right_action=self._action("Right",lambda:self._set_alignment(Qt.AlignmentFlag.AlignRight),"Ctrl+R",checkable=True)
-        self.alignment_justify_action=self._action("Justify",lambda:self._set_alignment(Qt.AlignmentFlag.AlignJustify),"Ctrl+J",checkable=True)
+        self.font_dialog_action=self._editor_command("Font…","font_dialog_action","Ctrl+Shift+F")
+        self.increase_font_size_action=self._editor_command("Increase Font Size","increase_font_size_action","Ctrl+Shift+]")
+        self.decrease_font_size_action=self._editor_command("Decrease Font Size","decrease_font_size_action","Ctrl+Shift+[")
+        self.text_colour_action=self._editor_command("Text Colour…","text_colour_action","Ctrl+Alt+Shift+C")
+        self.highlight_colour_action=self._editor_command("Highlight Colour…","highlight_colour_action","Ctrl+Alt+Shift+H")
+        self.clear_highlight_action=self._editor_command("Clear Highlight","clear_highlight_action")
+        self.bold_action=self._editor_command("Bold","bold_action",QKeySequence.StandardKey.Bold,checkable=True)
+        self.italic_action=self._editor_command("Italic","italic_action",QKeySequence.StandardKey.Italic,checkable=True)
+        self.underline_action=self._editor_command("Underline","underline_action",QKeySequence.StandardKey.Underline,checkable=True)
+        self.strike_action=self._editor_command("Strikethrough","strike_action","Ctrl+Shift+X",checkable=True)
+        self.superscript_action=self._editor_command("Superscript","superscript_action","Ctrl+.",checkable=True)
+        self.subscript_action=self._editor_command("Subscript","subscript_action","Ctrl+,",checkable=True)
+        self.bullet_action=self._editor_command("Bullet List","bulleted_list_action","Ctrl+Shift+L",checkable=True)
+        self.indent_action=self._editor_command("Indent","increase_indent_action","Ctrl+]")
+        self.outdent_action=self._editor_command("Outdent","decrease_indent_action","Ctrl+[")
+        self.paragraph_action=self._editor_command("Paragraph…","paragraph_action","Ctrl+Alt+Shift+P")
+        self.clear_formatting_action=self._editor_command("Clear Formatting","clear_formatting_action","Ctrl+Space")
+        self.alignment_left_action=self._command("Left",lambda:self._set_alignment(Qt.AlignmentFlag.AlignLeft),"Ctrl+L",checkable=True)
+        self.alignment_center_action=self._command("Centre",lambda:self._set_alignment(Qt.AlignmentFlag.AlignHCenter),"Ctrl+E",checkable=True)
+        self.alignment_right_action=self._command("Right",lambda:self._set_alignment(Qt.AlignmentFlag.AlignRight),"Ctrl+R",checkable=True)
+        self.alignment_justify_action=self._command("Justify",lambda:self._set_alignment(Qt.AlignmentFlag.AlignJustify),"Ctrl+J",checkable=True)
         group=QActionGroup(self); group.setExclusive(True)
         for a in (self.alignment_left_action,self.alignment_center_action,self.alignment_right_action,self.alignment_justify_action): group.addAction(a)
         self.heading_actions={}
         heading_group=QActionGroup(self); heading_group.setExclusive(True)
         for level in range(7):
             label="Normal Paragraph" if level==0 else f"Heading {level}"
-            action=self._action(label,lambda _checked=False,n=level:self._set_heading(n),f"Ctrl+Shift+{level}",checkable=True); self.heading_actions[level]=action; heading_group.addAction(action)
+            action=self._command(label,lambda _checked=False,n=level:self._set_heading(n),f"Ctrl+Shift+{level}",checkable=True); self.heading_actions[level]=action; heading_group.addAction(action)
         self.line_spacing_actions={}
         spacing_group=QActionGroup(self); spacing_group.setExclusive(True)
         for label,value,shortcut in (("1.0",100,"Ctrl+1"),("1.15",115,"Ctrl+2"),("1.5",150,"Ctrl+3"),("2.0",200,"Ctrl+4")):
-            action=self._action(label,lambda _checked=False,n=value:self._set_line_spacing(n),shortcut,checkable=True); self.line_spacing_actions[value]=action; spacing_group.addAction(action)
+            action=self._command(label,lambda _checked=False,n=value:self._set_line_spacing(n),shortcut,checkable=True); self.line_spacing_actions[value]=action; spacing_group.addAction(action)
 
-        self.link_action=self._proxy("Insert Link…","link_action","Ctrl+K")
-        self.edit_link_action=self._proxy("Edit Link…","edit_link_action")
-        self.remove_link_action=self._proxy("Remove Link","remove_link_action")
-        self.rule_action=self._proxy("Horizontal Rule","horizontal_rule_action","Ctrl+Shift+H")
-        self.image_action=self._proxy("Image…","image_action","Ctrl+Shift+I")
-        self.table_action=self._proxy("Table…","table_action","Ctrl+Shift+T")
-        self.table_row_above_action=self._proxy("Insert Row Above","table_row_above_action")
-        self.table_row_below_action=self._proxy("Insert Row Below","table_row_below_action")
-        self.table_delete_row_action=self._proxy("Delete Row","table_delete_row_action")
-        self.table_column_left_action=self._proxy("Insert Column Left","table_column_left_action")
-        self.table_column_right_action=self._proxy("Insert Column Right","table_column_right_action")
-        self.table_delete_column_action=self._proxy("Delete Column","table_delete_column_action")
-        self.table_delete_action=self._proxy("Delete Table","table_delete_action")
-        self.date_time_action=self._proxy("Date and Time","insert_date_time_action","F5")
-        self.date_action=self._proxy("Date Only","date_action","Ctrl+;")
-        self.time_action=self._proxy("Time Only","time_action","Ctrl+:")
-        self.symbol_action=self._proxy("Symbol…","symbol_action","Shift+F5")
+        self.link_action=self._editor_command("Insert Link…","link_action","Ctrl+K")
+        self.edit_link_action=self._editor_command("Edit Link…","edit_link_action")
+        self.remove_link_action=self._editor_command("Remove Link","remove_link_action")
+        self.rule_action=self._editor_command("Horizontal Rule","horizontal_rule_action","Ctrl+Shift+H")
+        self.image_action=self._editor_command("Image…","image_action","Ctrl+Shift+I")
+        self.table_action=self._editor_command("Table…","table_action","Ctrl+Shift+T")
+        self.table_row_above_action=self._editor_command("Insert Row Above","table_row_above_action")
+        self.table_row_below_action=self._editor_command("Insert Row Below","table_row_below_action")
+        self.table_delete_row_action=self._editor_command("Delete Row","table_delete_row_action")
+        self.table_column_left_action=self._editor_command("Insert Column Left","table_column_left_action")
+        self.table_column_right_action=self._editor_command("Insert Column Right","table_column_right_action")
+        self.table_delete_column_action=self._editor_command("Delete Column","table_delete_column_action")
+        self.table_delete_action=self._editor_command("Delete Table","table_delete_action")
+        self.date_time_action=self._editor_command("Date and Time","insert_date_time_action","F5")
+        self.date_action=self._editor_command("Date Only","date_action","Ctrl+;")
+        self.time_action=self._editor_command("Time Only","time_action","Ctrl+:")
+        self.symbol_action=self._editor_command("Symbol…","symbol_action","Shift+F5")
 
-        self.view_only_action=self._action("Lock Editor", self._toggle_lock_editor_current, "F12", checkable=True)
-        self.word_wrap_action=self._proxy("Word Wrap","wrap_action","Ctrl+Alt+Shift+W",checkable=True)
-        self.editor_canvas_theme_action=self._action(
+        self.view_only_action=self._command("Locked Mode", self._toggle_lock_editor_current, "F12", checkable=True)
+        self.collapsed_mode_action=self._command("Focused Mode", self._toggle_collapsed_mode, "F10", checkable=True)
+        self.file_header_action=self._command("File Header", self._toggle_file_header, "Ctrl+Alt+Shift+F", checkable=True)
+        self.file_header_action.setChecked(bool(self.config.get("show_file_header", True)))
+        self.word_wrap_action=self._editor_command("Word Wrap","wrap_action","Ctrl+Alt+Shift+W",checkable=True)
+        self.editor_canvas_theme_action=self._command(
             "Dark Editor", self._toggle_editor_canvas_light,
             "Ctrl+Alt+Shift+E", checkable=True,
         )
         self.editor_canvas_theme_action.setChecked(not self._canvas_is_light())
-        self.zoom_in_action=self._proxy("Zoom In","zoom_in_action",QKeySequence.StandardKey.ZoomIn)
-        self.zoom_out_action=self._proxy("Zoom Out","zoom_out_action",QKeySequence.StandardKey.ZoomOut)
-        self.zoom_reset_action=self._proxy("Reset Zoom","zoom_reset_action","Ctrl+0")
-        self.tab_width_action=self._proxy("Tab Width…","tab_width_action")
-        self.default_font_action=self._proxy("New Document Defaults…","default_font_action")
-        self.quick_start_action=self._action("Tutorial Wizard",self._show_quick_tour,"Shift+F1")
-        self.next_ribbon_tab_action=self._action("Next Ribbon Tab",lambda:self.shell_ribbon.cycle_tab(1),"Ctrl+Tab")
-        self.previous_ribbon_tab_action=self._action("Previous Ribbon Tab",lambda:self.shell_ribbon.cycle_tab(-1),"Ctrl+Shift+Tab")
+        self.zoom_in_action=self._editor_command("Zoom In","zoom_in_action",QKeySequence.StandardKey.ZoomIn)
+        self.zoom_out_action=self._editor_command("Zoom Out","zoom_out_action",QKeySequence.StandardKey.ZoomOut)
+        self.zoom_reset_action=self._editor_command("Reset Zoom","zoom_reset_action","Ctrl+0")
+        self.tab_width_action=self._editor_command("Tab Width…","tab_width_action")
+        self.default_font_action=self._editor_command("New Document Defaults…","default_font_action")
+        self.quick_start_action=self._command("Tutorial Wizard",self._show_quick_tour,"Shift+F1")
+        self.next_ribbon_tab_action=self._command("Next Ribbon Tab",lambda:self.shell_ribbon.cycle_tab(1),"Ctrl+Tab")
+        self.previous_ribbon_tab_action=self._command("Previous Ribbon Tab",lambda:self.shell_ribbon.cycle_tab(-1),"Ctrl+Shift+Tab")
         self.addAction(self.next_ribbon_tab_action); self.addAction(self.previous_ribbon_tab_action)
         self.theme_system_action=self.theme_actions["system"]; self.theme_dark_action=self.theme_actions["dark"]; self.theme_light_action=self.theme_actions["light"]
         self.icon_classic_action=self.icon_actions["classic"]; self.icon_new_action=self.icon_actions["new"]
@@ -497,7 +517,7 @@ class MainWindow(QMainWindow):
 
     def _build_static_menus(self, bar) -> None:
         self.file_menu=bar.addMenu("&File"); self.edit_menu=bar.addMenu("&Edit"); self.format_menu=bar.addMenu("F&ormat"); self.insert_menu=bar.addMenu("&Insert"); self.view_menu=bar.addMenu("&View"); self.settings_menu=bar.addMenu("&Settings"); self.help_menu=bar.addMenu("&Help")
-        for a in (self.new_action,self.new_window_action,self.new_folder_action): self.file_menu.addAction(a)
+        for a in (self.new_action,self.new_folder_action): self.file_menu.addAction(a)
         self.file_menu.addSeparator(); self.file_menu.addAction(self.dashboard_action); self.file_menu.addAction(self.previous_file_action); self.file_menu.addAction(self.next_file_action)
         self.workspace_menu=self.file_menu.addMenu("Workspace(s)"); self.workspace_action_group=QActionGroup(self.workspace_menu); self.workspace_action_group.setExclusive(True); self.workspace_menu.aboutToShow.connect(self._rebuild_workspace_menu); self._rebuild_workspace_menu()
         self.file_menu.addSeparator()
@@ -526,9 +546,9 @@ class MainWindow(QMainWindow):
         for a in (self.table_row_above_action,self.table_row_below_action,self.table_delete_row_action,self.table_column_left_action,self.table_column_right_action,self.table_delete_column_action,self.table_delete_action): table.addAction(a)
         self.insert_menu.addSeparator()
         for a in (self.date_time_action,self.date_action,self.time_action,self.symbol_action): self.insert_menu.addAction(a)
-        self.view_menu.addAction(self.fullscreen_action); self.view_menu.addAction(self.sidebar_action); self.view_menu.addAction(self.status_bar_action); self.view_menu.addSeparator(); self.view_menu.addAction(self.word_wrap_action); self.view_menu.addAction(self.editor_canvas_theme_action); self.view_menu.addSeparator(); self.view_menu.addAction(self.view_only_action)
+        self.view_menu.addAction(self.fullscreen_action); self.view_menu.addAction(self.sidebar_action); self.view_menu.addAction(self.status_bar_action); self.view_menu.addSeparator(); self.view_menu.addAction(self.word_wrap_action); self.view_menu.addAction(self.editor_canvas_theme_action); self.view_menu.addSeparator(); self.view_menu.addAction(self.collapsed_mode_action); self.view_menu.addAction(self.view_only_action); self.view_menu.addSeparator()
         zoom=self.view_menu.addMenu("Editor Zoom"); zoom.addAction(self.zoom_in_action); zoom.addAction(self.zoom_out_action); zoom.addSeparator(); zoom.addAction(self.zoom_reset_action)
-        misc=self.view_menu.addMenu("Editor Miscellaneous"); misc.addAction(self.tab_width_action); misc.addAction(self.default_font_action)
+        misc=self.view_menu.addMenu("Editor Miscellaneous"); misc.addAction(self.file_header_action); misc.addSeparator(); misc.addAction(self.tab_width_action); misc.addAction(self.default_font_action)
         theme=self.settings_menu.addMenu("App Theme"); self.app_theme_menu_action=theme.menuAction()
         for n in ("system","dark","light"): theme.addAction(self.theme_actions[n])
         icons=self.settings_menu.addMenu("App Icons"); self.app_icons_menu_action=icons.menuAction()
@@ -579,11 +599,12 @@ class MainWindow(QMainWindow):
             "table_delete_row_action":"delete-row", "date_time_action":"date-time",
             "date_action":"insert-date", "time_action":"insert-time", "symbol_action":"symbols",
             "fullscreen_action":"full-screen", "view_only_action":"view-only",
+            "collapsed_mode_action":"focused-mode", "file_header_action":"file-header",
             "word_wrap_action":"word-wrap", "editor_canvas_theme_action":"editor-canvas",
             "zoom_in_action":"zoom-in", "zoom_out_action":"zoom-out", "zoom_reset_action":"zoom-reset",
             "tab_width_action":"tab-width", "default_font_action":"default-font",
             "sidebar_action":"show-sidebar", "status_bar_action":"status-bar",
-            "theme_dark_action":"theme-dark", "theme_light_action":"theme-light",
+            "theme_system_action":"theme-system", "theme_dark_action":"theme-dark", "theme_light_action":"theme-light",
             "icon_classic_action":"icons-classic", "icon_new_action":"icons-new",
             "list_action":"list-view", "grid_action":"grid-view",
             "launch_dashboard_action":"launch-dashboard", "launch_last_file_action":"launch-last-file",
@@ -613,10 +634,10 @@ class MainWindow(QMainWindow):
             if path.is_file():
                 action.setIcon(QIcon(str(path)))
 
-    def _create_shell_ribbon(self) -> None:
-        names=("print_action","export_pdf_action","page_setup_action","new_action","new_folder_action","new_window_action","manage_workspaces_action","dashboard_action","save_as_action","properties_action","delete_file_action","external_editor_action","save_action","rename_file_action","duplicate_action","open_document_folder_action","save_new_action","save_dashboard_action","save_exit_action","exit_action","select_all_action","cut_action","delete_text_action","paste_plain_action","undo_action","redo_action","copy_action","paste_action","increase_font_size_action","decrease_font_size_action","font_dialog_action","text_colour_action","underline_action","strike_action","subscript_action","superscript_action","bold_action","italic_action","highlight_colour_action","bullet_action","alignment_right_action","alignment_justify_action","indent_action","outdent_action","alignment_left_action","alignment_center_action","paragraph_action","clear_formatting_action","replace_action","duplicate_line_action","delete_line_action","date_time_action","symbol_action","date_action","time_action","remove_link_action","image_action","link_action","edit_link_action","table_delete_action","table_column_left_action","table_column_right_action","table_delete_column_action","table_action","table_row_above_action","table_row_below_action","table_delete_row_action","rule_action","fullscreen_action","view_only_action","word_wrap_action","editor_canvas_theme_action","sidebar_action","status_bar_action","search_bar_action","zoom_in_action","zoom_reset_action","zoom_out_action","tab_width_action","default_font_action","theme_system_action","theme_dark_action","theme_light_action","icon_classic_action","icon_new_action","list_action","grid_action","launch_dashboard_action","launch_last_file_action","drop_active_action","drop_new_window_action","docs_action","quick_start_action","shortcuts_action","about_action","github_action","issue_action")
-        self.shell_ribbon=ShellRibbon({n:getattr(self,n) for n in names},self.ribbon_host); self.ribbon_layout.addWidget(self.shell_ribbon)
-        self.shell_ribbon.font_family_selected.connect(lambda font:self._engine_call("set_selected_font",font)); self.shell_ribbon.font_size_selected.connect(lambda text:self._engine_call("set_selected_font_size",text)); self.shell_ribbon.heading_selected.connect(self._set_heading); self.shell_ribbon.line_spacing_selected.connect(self._set_line_spacing)
+    def _create_tabbed_toolbar(self) -> None:
+        names=("print_action","export_pdf_action","page_setup_action","new_action","new_folder_action","new_window_action","manage_workspaces_action","dashboard_action","save_as_action","properties_action","delete_file_action","external_editor_action","save_action","rename_file_action","duplicate_action","open_document_folder_action","save_new_action","save_dashboard_action","save_exit_action","exit_action","select_all_action","cut_action","delete_text_action","paste_plain_action","undo_action","redo_action","copy_action","paste_action","increase_font_size_action","decrease_font_size_action","font_dialog_action","text_colour_action","underline_action","strike_action","subscript_action","superscript_action","bold_action","italic_action","highlight_colour_action","bullet_action","alignment_right_action","alignment_justify_action","indent_action","outdent_action","alignment_left_action","alignment_center_action","paragraph_action","clear_formatting_action","replace_action","duplicate_line_action","delete_line_action","date_time_action","symbol_action","date_action","time_action","remove_link_action","image_action","link_action","edit_link_action","table_delete_action","table_column_left_action","table_column_right_action","table_delete_column_action","table_action","table_row_above_action","table_row_below_action","table_delete_row_action","rule_action","fullscreen_action","view_only_action","collapsed_mode_action","file_header_action","word_wrap_action","editor_canvas_theme_action","sidebar_action","status_bar_action","search_bar_action","zoom_in_action","zoom_reset_action","zoom_out_action","tab_width_action","default_font_action","theme_system_action","theme_dark_action","theme_light_action","icon_classic_action","icon_new_action","list_action","grid_action","launch_dashboard_action","launch_last_file_action","drop_active_action","drop_new_window_action","docs_action","quick_start_action","shortcuts_action","about_action","github_action","issue_action")
+        self.shell_ribbon=ShellRibbon({n:getattr(self,n) for n in names},self.tabbed_container); self.tabbed_layout.addWidget(self.shell_ribbon)
+        self.shell_ribbon.font_family_selected.connect(lambda font:self._editor_call("set_selected_font",font)); self.shell_ribbon.font_size_selected.connect(lambda text:self._editor_call("set_selected_font_size",text)); self.shell_ribbon.heading_selected.connect(self._set_heading); self.shell_ribbon.line_spacing_selected.connect(self._set_line_spacing)
         self.shell_ribbon.collapsed_changed.connect(lambda v:self.config.set("rico_plus_ribbon_collapsed",bool(v),save=True))
         if bool(self.config.get("rico_plus_ribbon_collapsed",False)): self.shell_ribbon.set_collapsed(True,emit=False)
         self._sync_editor_actions()
@@ -625,7 +646,13 @@ class MainWindow(QMainWindow):
         page=self._current_page()
         if page is not None: page.save_to_disk()
     def _rename_current(self) -> None:
-        if self.editor_manager.current_document is not None: self.file_actions.rename_document(self.editor_manager.current_document)
+        document = self.editor_manager.current_document
+        if document is not None:
+            self.file_actions.rename_document(document)
+            return
+        folder = self.editor_manager.current_folder
+        if folder is not None and folder != self.library_root:
+            self.file_actions.rename_folder(folder)
     def _delete_current_file(self) -> None:
         if self.editor_manager.current_document is not None: self.file_actions.remove_document(self.editor_manager.current_document)
     def _duplicate_current(self) -> None:
@@ -645,48 +672,55 @@ class MainWindow(QMainWindow):
             self.view_only_action.blockSignals(False)
             return
         desired = bool(checked)
-        source = self._engine_action("view_only_action")
+        source = self._editor_action("view_only_action")
         if source is not None and bool(page.view_only) != desired:
             source.trigger()
         resulting = bool(page.view_only)
         self.editor_manager.set_lock_editor(resulting)
         self._sync_editor_actions()
-    def _set_alignment(self,value) -> None: self._engine_call("set_alignment",value)
-    def _set_heading(self,value: int) -> None: self._engine_call("apply_heading",int(value))
-    def _set_line_spacing(self,value: int) -> None: self._engine_call("set_line_spacing",int(value))
+        self._update_window_title()
+    def _set_alignment(self,value) -> None: self._editor_call("set_alignment",value)
+    def _set_heading(self,value: int) -> None: self._editor_call("apply_heading",int(value))
+    def _set_line_spacing(self,value: int) -> None: self._editor_call("set_line_spacing",int(value))
 
-    def _sync_proxy_action(self,shell_name: str,engine_name: str) -> None:
-        shell=getattr(self,shell_name); source=self._engine_action(engine_name); shell.setEnabled(source is not None and source.isEnabled())
+    def _sync_editor_command_state(self,shell_name: str,engine_name: str) -> None:
+        shell=getattr(self,shell_name); source=self._editor_action(engine_name); shell.setEnabled(source is not None and source.isEnabled())
         if shell.isCheckable() and source is not None:
             shell.blockSignals(True); shell.setChecked(source.isChecked()); shell.blockSignals(False)
 
     def _sync_editor_actions(self,*_args) -> None:
         page=self._current_page(); enabled=page is not None
-        for name in ("save_action","save_as_action","save_new_action","save_dashboard_action","save_exit_action","properties_action","external_editor_action","rename_file_action","delete_file_action","duplicate_action","open_document_folder_action","print_action","export_pdf_action","page_setup_action"): getattr(self,name).setEnabled(enabled)
+        if page is not None and hasattr(self, "collapsed_mode_action") and self.collapsed_mode_action.isChecked():
+            page.set_status_visible(False)
+            page.set_header_visible(False)
+        for name in ("save_action","save_as_action","save_new_action","save_dashboard_action","save_exit_action","properties_action","external_editor_action","delete_file_action","duplicate_action","open_document_folder_action","print_action","export_pdf_action","page_setup_action"): getattr(self,name).setEnabled(enabled)
+        folder = self.editor_manager.current_folder
+        self.rename_file_action.setEnabled(
+            enabled or (folder is not None and folder != self.library_root)
+        )
         pairs={"undo_action":"undo_action","redo_action":"redo_action","cut_action":"cut_action","copy_action":"copy_action","paste_action":"paste_action","paste_plain_action":"paste_plain_action","delete_text_action":"delete_text_action","duplicate_line_action":"duplicate_line_action","delete_line_action":"delete_line_action","select_all_action":"select_all_action","search_bar_action":"search_bar_action","replace_action":"replace_action","font_dialog_action":"font_dialog_action","increase_font_size_action":"increase_font_size_action","decrease_font_size_action":"decrease_font_size_action","text_colour_action":"text_colour_action","highlight_colour_action":"highlight_colour_action","clear_highlight_action":"clear_highlight_action","bold_action":"bold_action","italic_action":"italic_action","underline_action":"underline_action","strike_action":"strike_action","superscript_action":"superscript_action","subscript_action":"subscript_action","bullet_action":"bulleted_list_action","indent_action":"increase_indent_action","outdent_action":"decrease_indent_action","paragraph_action":"paragraph_action","clear_formatting_action":"clear_formatting_action","link_action":"link_action","edit_link_action":"edit_link_action","remove_link_action":"remove_link_action","rule_action":"horizontal_rule_action","image_action":"image_action","table_action":"table_action","table_row_above_action":"table_row_above_action","table_row_below_action":"table_row_below_action","table_delete_row_action":"table_delete_row_action","table_column_left_action":"table_column_left_action","table_column_right_action":"table_column_right_action","table_delete_column_action":"table_delete_column_action","table_delete_action":"table_delete_action","date_time_action":"insert_date_time_action","date_action":"date_action","time_action":"time_action","symbol_action":"symbol_action","word_wrap_action":"wrap_action","zoom_in_action":"zoom_in_action","zoom_out_action":"zoom_out_action","zoom_reset_action":"zoom_reset_action","tab_width_action":"tab_width_action","default_font_action":"default_font_action"}
-        for a,b in pairs.items(): self._sync_proxy_action(a,b)
+        for a,b in pairs.items(): self._sync_editor_command_state(a,b)
         self.view_only_action.setEnabled(enabled); self.view_only_action.blockSignals(True); self.view_only_action.setChecked(bool(page.view_only) if page else bool(self.config.get("lock_editor", False))); self.view_only_action.blockSignals(False)
         self.editor_canvas_theme_action.blockSignals(True)
         self.editor_canvas_theme_action.setChecked(not self._canvas_is_light())
         self.editor_canvas_theme_action.blockSignals(False)
         for action in [*self.heading_actions.values(),*self.line_spacing_actions.values(),self.alignment_left_action,self.alignment_center_action,self.alignment_right_action,self.alignment_justify_action]: action.setEnabled(enabled)
         if enabled:
-            engine=page.engine
             for level,shell in self.heading_actions.items():
-                source=getattr(engine,"heading_actions",{}).get(level)
+                source=page.editor_group_action("heading_actions", level)
                 if isinstance(source,QAction):
                     shell.blockSignals(True); shell.setChecked(source.isChecked()); shell.blockSignals(False)
             for value,shell in self.line_spacing_actions.items():
-                source=getattr(engine,"line_spacing_actions",{}).get(value)
+                source=page.editor_group_action("line_spacing_actions", value)
                 if isinstance(source,QAction):
                     shell.blockSignals(True); shell.setChecked(source.isChecked()); shell.blockSignals(False)
-            for shell_name,engine_name in (("alignment_left_action","alignment_left_action"),("alignment_center_action","alignment_center_action"),("alignment_right_action","alignment_right_action"),("alignment_justify_action","alignment_justify_action")):
-                shell=getattr(self,shell_name); source=getattr(engine,engine_name,None)
+            for shell_name,editor_name in (("alignment_left_action","alignment_left_action"),("alignment_center_action","alignment_center_action"),("alignment_right_action","alignment_right_action"),("alignment_justify_action","alignment_justify_action")):
+                shell=getattr(self,shell_name); source=page.editor_action(editor_name)
                 if isinstance(source,QAction):
                     shell.blockSignals(True); shell.setChecked(source.isChecked()); shell.blockSignals(False)
         if hasattr(self,"shell_ribbon"):
             self.shell_ribbon.set_editor_enabled(enabled)
-            if page is not None: self.shell_ribbon.sync_from_engine(page.engine)
+            if page is not None: page.sync_ribbon_selectors(self.shell_ribbon)
 
     def _connect_signals(self) -> None:
         self.navigation.dashboard_requested.connect(
@@ -868,6 +902,7 @@ class MainWindow(QMainWindow):
     def _rebuild_workspace_menu(self) -> None:
         self.workspace_menu.clear()
         self.workspace_menu.addAction(self.refresh_action)
+        self.workspace_menu.addAction(self.manage_workspaces_action)
         self.workspace_menu.addSeparator()
         self.workspace_action_group = QActionGroup(self.workspace_menu)
         self.workspace_action_group.setExclusive(True)
@@ -886,7 +921,7 @@ class MainWindow(QMainWindow):
             self.workspace_action_group.addAction(action)
             self.workspace_menu.addAction(action)
         self.workspace_menu.addSeparator()
-        self.workspace_menu.addAction(self.manage_workspaces_action)
+        self.workspace_menu.addAction(self.new_window_action)
 
     def _switch_project(self, project_id: str) -> bool:
         project = self.project_registry.get(project_id)
@@ -1096,6 +1131,12 @@ class MainWindow(QMainWindow):
             "editor_canvas_light": not bool(checked),
         }, save=True)
         self.editor_manager.apply_editor_preferences()
+        self.editor_manager.show_current_editor_status(
+            "Editor canvas switched to a dark background."
+            if bool(checked)
+            else "Editor canvas switched to a light background.",
+            3000,
+        )
 
     def _set_theme(self, theme: str) -> None:
         if theme not in {"system", "dark", "light"}:
@@ -1116,9 +1157,10 @@ class MainWindow(QMainWindow):
             folder_page.refresh_theme()
         for _path, state in self.states:
             if isinstance(state.editor_page, EditorPage):
-                state.editor_page.engine.appimage_theme = theme
-                state.editor_page.engine.refresh_portable_icons()
+                state.editor_page.set_editor_app_theme(theme)
                 state.editor_page.apply_theme()
+        label = "System" if theme == "system" else theme.title()
+        self.show_status(f"Theme: {label}.")
 
     def _set_icon_set(self, icon_set: str) -> None:
         if icon_set not in {"classic", "new"}:
@@ -1133,7 +1175,7 @@ class MainWindow(QMainWindow):
             page.refresh_theme()
         for _path, state in self.states:
             if isinstance(state.editor_page, EditorPage):
-                state.editor_page.engine.set_appimage_icon_set(icon_set)
+                state.editor_page.set_editor_icon_set(icon_set)
 
     def _set_launch_screen(self, screen: str) -> None:
         if screen not in {"dashboard", "last_file"}:
@@ -1149,12 +1191,81 @@ class MainWindow(QMainWindow):
         for value, action in self.drop_actions.items():
             action.setChecked(value == mode)
 
+    def _set_sidebar_visible(self, visible: bool, *, sync_action: bool = True) -> None:
+        visible = bool(visible)
+        self.navigation.setVisible(visible)
+        if sync_action:
+            self.sidebar_action.blockSignals(True)
+            self.sidebar_action.setChecked(visible)
+            self.sidebar_action.blockSignals(False)
+
     def _toggle_sidebar(self, checked: bool) -> None:
-        self.navigation.setVisible(bool(checked))
+        self._set_sidebar_visible(bool(checked), sync_action=False)
+
+    def _set_status_visible(self, visible: bool, *, persist: bool, sync_action: bool = True) -> None:
+        visible = bool(visible)
+        self.statusBar().setVisible(visible)
+        for _path, state in tuple(self.states):
+            page = state.editor_page
+            if isinstance(page, EditorPage):
+                page.set_status_visible(visible)
+        if sync_action:
+            self.status_bar_action.blockSignals(True)
+            self.status_bar_action.setChecked(visible)
+            self.status_bar_action.blockSignals(False)
+        if persist:
+            self.config.set("show_status_bar", visible, save=True)
 
     def _toggle_status_bar(self, checked: bool) -> None:
-        self.statusBar().setVisible(bool(checked))
-        self.config.set("show_status_bar", bool(checked), save=True)
+        self._set_status_visible(bool(checked), persist=True, sync_action=False)
+
+    def _set_file_header_visible(self, visible: bool, *, persist: bool, sync_action: bool = True) -> None:
+        visible = bool(visible)
+        for _path, state in tuple(self.states):
+            page = state.editor_page
+            if isinstance(page, EditorPage):
+                page.set_header_visible(visible)
+        if sync_action:
+            self.file_header_action.blockSignals(True)
+            self.file_header_action.setChecked(visible)
+            self.file_header_action.blockSignals(False)
+        if persist:
+            self.config.set("show_file_header", visible, save=True)
+
+    def _toggle_file_header(self, checked: bool) -> None:
+        self._set_file_header_visible(bool(checked), persist=True, sync_action=False)
+
+    def _toggle_collapsed_mode(self, checked: bool) -> None:
+        """Temporarily focus the workspace without overwriting view preferences."""
+        checked = bool(checked)
+        if checked:
+            if self._collapsed_mode_restore is None:
+                self._collapsed_mode_restore = {
+                    "sidebar": self.navigation.isVisible(),
+                    "status": self.statusBar().isVisible(),
+                    "header": self.file_header_action.isChecked(),
+                    "ribbon_collapsed": bool(getattr(self.shell_ribbon, "_collapsed", False)),
+                    "splitter_sizes": list(self.splitter.sizes()),
+                }
+            self._set_sidebar_visible(False)
+            self._set_status_visible(False, persist=False)
+            self._set_file_header_visible(False, persist=False)
+            # AppMenu-only command: reuse the existing double-click collapse
+            # behavior without adding or changing any Ribbon command.
+            self.shell_ribbon.set_collapsed(True, emit=False)
+            return
+
+        restore = self._collapsed_mode_restore or {
+            "sidebar": self.sidebar_action.isChecked(),
+            "status": bool(self.config.get("show_status_bar", True)),
+            "header": bool(self.config.get("show_file_header", True)),
+            "ribbon_collapsed": bool(self.config.get("rico_plus_ribbon_collapsed", False)),
+        }
+        self._set_sidebar_visible(bool(restore.get("sidebar", True)))
+        self._set_status_visible(bool(restore.get("status", True)), persist=False)
+        self._set_file_header_visible(bool(restore.get("header", True)), persist=False)
+        self.shell_ribbon.set_collapsed(bool(restore.get("ribbon_collapsed", False)), emit=False)
+        self._collapsed_mode_restore = None
 
     def _toggle_fullscreen(self, checked: bool) -> None:
         self.showFullScreen() if checked else self.showNormal()
@@ -1164,93 +1275,52 @@ class MainWindow(QMainWindow):
         self.grid_action.setChecked(mode == "grid")
 
     def _shortcut_catalog(self):
-        """Group shortcut reference entries by the top-level AppMenu menu."""
-        return {
-            "File": [
-                ("New RTF File", self.new_action),
-                ("New Window", self.new_window_action),
-                ("New Folder", self.new_folder_action),
-                ("Show Dashboard", self.dashboard_action),
-                ("Previous File", self.previous_file_action),
-                ("Next File", self.next_file_action),
-                ("Manage Workspaces", self.manage_workspaces_action),
-                ("Save", self.save_action),
-                ("Save As", self.save_as_action),
-                ("Save and New", self.save_new_action),
-                ("Save and Dashboard", self.save_dashboard_action),
-                ("Save and Exit", self.save_exit_action),
-                ("Properties", self.properties_action),
-                ("Open in External Editor", self.external_editor_action),
-                ("Rename", self.rename_file_action),
-                ("Duplicate File", self.duplicate_action),
-                ("Open Containing Folder", self.open_document_folder_action),
-                ("Print", self.print_action),
-                ("Export PDF", self.export_pdf_action),
-                ("Exit", self.exit_action),
-            ],
-            "Edit": [
-                ("Undo", self.undo_action),
-                ("Redo", self.redo_action),
-                ("Cut", self.cut_action),
-                ("Copy", self.copy_action),
-                ("Paste", self.paste_action),
-                ("Paste Plain Text", self.paste_plain_action),
-                ("Delete", self.delete_text_action),
-                ("Duplicate Line / Selection", self.duplicate_line_action),
-                ("Delete Line", self.delete_line_action),
-                ("Select All", self.select_all_action),
-                ("Find Bar", self.search_bar_action),
-                ("Find and Replace", self.replace_action),
-            ],
-            "Format": [
-                ("Font", self.font_dialog_action),
-                ("Text Colour", self.text_colour_action),
-                ("Highlight Colour", self.highlight_colour_action),
-                ("Bold", self.bold_action),
-                ("Italic", self.italic_action),
-                ("Underline", self.underline_action),
-                ("Strikethrough", self.strike_action),
-                ("Superscript", self.superscript_action),
-                ("Subscript", self.subscript_action),
-                ("Bullet List", self.bullet_action),
-                ("Indent", self.indent_action),
-                ("Outdent", self.outdent_action),
-                ("Paragraph", self.paragraph_action),
-                ("Clear Formatting", self.clear_formatting_action),
-            ],
-            "Insert": [
-                ("Insert Link", self.link_action),
-                ("Horizontal Rule", self.rule_action),
-                ("Image", self.image_action),
-                ("Table", self.table_action),
-                ("Date and Time", self.date_time_action),
-                ("Date Only", self.date_action),
-                ("Time Only", self.time_action),
-                ("Symbol", self.symbol_action),
-            ],
-            "View": [
-                ("Full Screen", self.fullscreen_action),
-                ("Show Sidebar", self.sidebar_action),
-                ("Show Status", self.status_bar_action),
-                ("Word Wrap", self.word_wrap_action),
-                ("Dark Editor", self.editor_canvas_theme_action),
-                ("Lock Editor", self.view_only_action),
-                ("Zoom In", self.zoom_in_action),
-                ("Zoom Out", self.zoom_out_action),
-                ("Zoom Reset", self.zoom_reset_action),
-                ("Tab Width", self.tab_width_action),
-                ("Next Ribbon Tab", self.next_ribbon_tab_action),
-                ("Previous Ribbon Tab", self.previous_ribbon_tab_action),
-            ],
-            "Settings": [
-                ("Toggle List/Grid View", self.toggle_dashboard_view_action),
-            ],
-            "Help": [
-                ("Documentation", self.docs_action),
-                ("Quick Tour", self.quick_start_action),
-                ("Keyboard Shortcuts", self.shortcuts_action),
-            ],
+        """Return every assigned shortcut, grouped by authoritative AppMenu menu.
+
+        Menu actions are collected recursively so nested formatting/alignment/
+        paragraph/spacing shortcuts cannot silently disappear from the reference
+        dialog.  Non-menu shortcuts are appended explicitly.
+        """
+        label_overrides = {
+            self.rename_file_action: "Rename File or Folder",
+            self.zoom_reset_action: "Zoom Reset",
+            self.quick_start_action: "Quick Tour",
         }
+
+        def collect(menu: QMenu):
+            entries = []
+            for action in menu.actions():
+                submenu = action.menu()
+                if submenu is not None:
+                    entries.extend(collect(submenu))
+                    continue
+                if action.shortcut().toString(QKeySequence.SequenceFormat.NativeText).strip():
+                    entries.append((label_overrides.get(action, action.text()), action))
+            return entries
+
+        catalog = {
+            "File": collect(self.file_menu),
+            "Edit": collect(self.edit_menu),
+            "Format": collect(self.format_menu),
+            "Insert": collect(self.insert_menu),
+            "View": collect(self.view_menu),
+            "Settings": collect(self.settings_menu),
+            "Help": collect(self.help_menu),
+        }
+
+        # These shortcuts are intentionally not represented by AppMenu QActions.
+        catalog["Edit"].extend((
+            ("Find Next", "F3"),
+            ("Previous Match", "Shift+F3"),
+        ))
+        catalog["View"].extend((
+            ("Next Ribbon Tab", self.next_ribbon_tab_action),
+            ("Previous Ribbon Tab", self.previous_ribbon_tab_action),
+        ))
+        catalog["Settings"].append(
+            ("Toggle List/Grid View", self.toggle_dashboard_view_action)
+        )
+        return catalog
 
     def _show_shortcuts(self, _checked=False) -> None:
         if self.shortcuts_dialog is not None:
@@ -1312,7 +1382,7 @@ class MainWindow(QMainWindow):
             "Workspaces and Dashboard",
             "Keep separate RTF collections without moving the application.",
             "<p><b>File → Workspace(s)</b> lists registered Workspaces and marks "
-            "the active one. <b>Manage Workspaces…</b> adds an existing folder, "
+            "the active one. <b>Open / Manage Workspaces…</b> adds an existing folder, "
             "renames its display label, relinks it, or removes only its "
             "registration.</p>"
             "<p>Only the active Workspace is scanned and watched. The Dashboard "
@@ -1321,7 +1391,7 @@ class MainWindow(QMainWindow):
         add_page(
             "Create, open and save",
             "Rico Plus edits standards-based RTF files directly.",
-            "<p><b>File</b> contains New RTF File, New Folder, New Window, "
+            "<p><b>File</b> contains New RTF File, New Folder, New Window…, "
             "Save, Save As, Print, Export PDF and file-management commands. "
             "Save and New, Save and Dashboard and Save and Exit save first, "
             "then perform the named action.</p>"
@@ -1345,7 +1415,7 @@ class MainWindow(QMainWindow):
             "<p><b>Ctrl+F</b> toggles Find. Use <b>F3</b> for the next result and "
             "<b>Shift+F3</b> for the previous result. Home also provides Find "
             "and Replace.</p>"
-            "<p><b>Lock Editor</b> protects documents from accidental changes "
+            "<p><b>Locked Mode</b> protects documents from accidental changes "
             "while navigation, copying and search remain available. The lock is "
             "a Rico Plus preference and persists as you move between files and "
             "sessions.</p>",
@@ -1391,7 +1461,7 @@ class MainWindow(QMainWindow):
     def _open_documentation(self, _checked=False) -> None:
         page = self._current_page()
         if page is not None:
-            page.engine.open_documentation()
+            page.open_documentation()
             return
         path = self.package_root / "docs" / "README.md"
         if not self.desktop_launcher.open_path(path):
@@ -1434,8 +1504,10 @@ class MainWindow(QMainWindow):
         document = self.editor_manager.current_document
         if document is not None:
             scope = "External" if document.external else workspace
+            page = self._current_page()
+            lock_suffix = " — Locked Mode" if page is not None and page.view_only else ""
             self.setWindowTitle(
-                f"{document.filename} — {scope} — {APP_NAME}"
+                f"{document.filename} — {scope} — {APP_NAME}{lock_suffix}"
             )
         else:
             self.setWindowTitle(f"{workspace} — {APP_NAME}")
@@ -1628,33 +1700,142 @@ class MainWindow(QMainWindow):
         else:
             event.ignore()
 
+    def _write_shutdown_timing(self, timings: dict[str, float]) -> None:
+        """Write shutdown diagnostics only when explicitly requested."""
+        enabled = os.environ.get(SHUTDOWN_PROFILE_ENV, "").casefold()
+        if enabled not in {"1", "true", "yes", "on"}:
+            return
+
+        report_path = self.runtime_paths.config_root / "shutdown-timing.jsonl"
+        payload = {
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "documents": len(self.repository),
+            "timings_ms": {
+                key: round(value * 1000.0, 2)
+                for key, value in timings.items()
+            },
+        }
+        try:
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            with report_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, sort_keys=True) + "\n")
+        except OSError:
+            pass
+
+        printable = " · ".join(
+            f"{key}={value * 1000.0:.1f} ms"
+            for key, value in timings.items()
+        )
+        print(f"Rico Plus shutdown: {printable}", flush=True)
+
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._closing:
             event.accept()
             return
+
+        started = time.perf_counter()
+        timings: dict[str, float] = {}
+
+        unsaved_started = time.perf_counter()
         if not self.editor_manager.can_close_application():
+            timings["unsaved_prompt"] = time.perf_counter() - unsaved_started
             event.ignore()
             return
+        timings["unsaved_prompt"] = time.perf_counter() - unsaved_started
+
         self._closing = True
+
+        closing_dialog = ClosingDialog(self)
+        closing_dialog.start()
+        QApplication.processEvents()
+
+        def stage(detail: str) -> None:
+            closing_dialog.set_stage(detail)
+            QApplication.processEvents()
+
+        stage("Saving your preferences…")
+        config_started = time.perf_counter()
         self._save_active_project_state(save=True)
+        splitter_sizes = (
+            list(
+                self._collapsed_mode_restore.get(
+                    "splitter_sizes", self.splitter.sizes()
+                )
+            )
+            if self._collapsed_mode_restore is not None
+            else self.splitter.sizes()
+        )
         self.config.update(
             {
                 "window_width": self.width(),
                 "window_height": self.height(),
                 "window_maximized": self.isMaximized(),
-                "splitter_sizes": self.splitter.sizes(),
+                "splitter_sizes": splitter_sizes,
+                "collapsed_folders": sorted(
+                    self.navigation.collapsed_folders()
+                ),
+                "dashboard_sort": self.editor_manager.dashboard._sort_mode,
+                "dashboard_search": (
+                    self.editor_manager.dashboard.search_input.text()
+                ),
+                "dashboard_view": (
+                    self.editor_manager.dashboard.view_mode()
+                ),
+                # Compatibility mirror for the application-level fallback.
+                # The per-Workspace value preserved above is authoritative.
+                "last_opened_file": self.project_registry.active_project.state.get(
+                    "last_opened_file"
+                ),
+                "last_opened_folder": (
+                    str(self.editor_manager.current_folder)
+                    if self.editor_manager.current_folder is not None
+                    else None
+                ),
             },
             save=True,
         )
-        if not self.watcher.stop(
-            timeout_ms=2500, pump_events=QApplication.processEvents
-        ):
+        timings["save_config"] = time.perf_counter() - config_started
+
+        # Hide the large main hierarchy while retaining the small dialog.
+        self.editor_manager.dashboard.set_loading(False)
+        self.navigation.set_loading(False)
+        self.centralWidget().hide()
+        self.menuBar().hide()
+        self.statusBar().hide()
+        closing_dialog.adjustSize()
+        closing_dialog.move(
+            self.frameGeometry().center()
+            - closing_dialog.rect().center()
+        )
+        QApplication.processEvents()
+
+        stage("Stopping the workspace scanner…")
+        scanner_started = time.perf_counter()
+        scan_stopped = self.watcher.stop(
+            timeout_ms=2000,
+            pump_events=QApplication.processEvents,
+        )
+        timings["stop_scanner"] = time.perf_counter() - scanner_started
+
+        if not scan_stopped:
             self._closing = False
-            QMessageBox.warning(
-                self,
-                "Close Delayed",
-                "The workspace scanner is still stopping. Please try again.",
-            )
+            closing_dialog.close()
+            self.centralWidget().show()
+            self.menuBar().show()
+            self.statusBar().show()
+            self.show_status("Could not cancel the workspace scan yet.")
             event.ignore()
             return
+
+        timings["total_before_exit"] = time.perf_counter() - started
+        self._write_shutdown_timing(timings)
+
+        stage("Closing Rico Plus…")
         event.accept()
+        QApplication.processEvents()
+
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        finally:
+            os._exit(0)
