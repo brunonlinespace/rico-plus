@@ -72,6 +72,14 @@ The application menu is organised as:
 
 The Keyboard Shortcuts dialog uses these menu groups as its filter categories and retains an **All** view.
 
+<p align="center">
+  <img
+      src="Screenshots/Screenshot_20260918_130630.png"
+      alt="Rico Plus Dashboard"
+      width="780"
+  >
+</p>
+
 ## Workspaces
 
 Rico Plus keeps workspace management separate from the files themselves.
@@ -88,14 +96,6 @@ Rico Plus keeps workspace management separate from the files themselves.
 An RTF opened by the operating system from outside the active workspace is treated as an external session. It is not automatically copied or registered.
 
 The main Dashboard supports kinetic touch panning in both List and Grid views. The folder tree and Folder Dashboard deliberately retain their existing interaction model.
-
-<p align="center">
-  <img
-      src="Screenshots/Screenshot_20260918_130630.png"
-      alt="Rico Plus Dashboard"
-      width="780"
-  >
-</p>
 
 ### Drag and drop
 
