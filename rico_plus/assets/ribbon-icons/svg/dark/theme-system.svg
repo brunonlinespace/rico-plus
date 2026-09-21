@@ -1,13 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
-
-<g stroke-linecap="square" stroke-linejoin="miter">
-  <rect x="12" y="10" width="40" height="28" fill="none" stroke="#25303B" stroke-width="5"/>
-  <rect x="14" y="12" width="40" height="28" fill="#0E141A" stroke="#F4F6F8" stroke-width="3.2"/>
-  <circle cx="34" cy="26" r="10" fill="#ffffff" stroke="#F4F6F8" stroke-width="2.6"/>
-  <path d="M34 16 A10 10 0 0 1 34 36 Z" fill="#D43A32"/>
-  <path d="M31 41H37V49H31Z" fill="none" stroke="#F4F6F8" stroke-width="3.2"/>
-  <path d="M25 52H43" fill="none" stroke="#F4F6F8" stroke-width="3.2"/>
-  <path d="M48 15V36" fill="none" stroke="#D43A32" stroke-width="2.8"/>
-</g>
-
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><g fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M27 17A15 15 0 1 0 27 47A12 12 0 0 1 27 17Z" stroke="#EEF0F2" stroke-width="3"/><circle cx="43" cy="32" r="7" fill="#EF5350" stroke="#EEF0F2" stroke-width="2"/><path d="M43 17V21M43 43V47M28 32H32M54 32H58M32 21L35 24M51 40L54 43M54 21L51 24M35 40L32 43" stroke="#EEF0F2" stroke-width="2.4"/></g></svg>

@@ -1,9 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
-<rect x="14" y="16" width="36" height="26" rx="4" ry="4" fill="none" stroke="#DEE3E8" stroke-width="4"/>
-<rect x="19" y="21" width="4" height="4" rx="1" ry="1" fill="none" stroke="#DEE3E8" stroke-width="2"/>
-<polyline points="28,24 44,24" fill="none" stroke="#ED1C24" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<rect x="19" y="28" width="4" height="4" rx="1" ry="1" fill="none" stroke="#DEE3E8" stroke-width="2"/>
-<polyline points="28,31 44,31" fill="none" stroke="#B5BDC6" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<rect x="19" y="35" width="4" height="4" rx="1" ry="1" fill="none" stroke="#DEE3E8" stroke-width="2"/>
-<polyline points="28,38 44,38" fill="none" stroke="#B5BDC6" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><g fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="11" y="13" width="42" height="38" rx="3" stroke="#EEF0F2" stroke-width="3"/><circle cx="19" cy="23" r="2.5" fill="#EEF0F2"/><path d="M26 23H46" stroke="#B8BDC3" stroke-width="2.5"/><circle cx="19" cy="32" r="2.5" fill="#EF5350"/><path d="M26 32H46" stroke="#B8BDC3" stroke-width="2.5"/><circle cx="19" cy="41" r="2.5" fill="#EEF0F2"/><path d="M26 41H46" stroke="#B8BDC3" stroke-width="2.5"/></g></svg>
