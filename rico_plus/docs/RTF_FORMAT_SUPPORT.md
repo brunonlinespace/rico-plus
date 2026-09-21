@@ -1,4 +1,4 @@
-# RTF Format Support in Rico Plus 0.0.2
+# RTF Format Support in Rico Plus 0.0.3
 
 Rico Plus opens and saves `.rtf` only. Standards interoperability is the
 persistence target.

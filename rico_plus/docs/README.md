@@ -1,6 +1,6 @@
 # Rico Plus
 
-Rico Plus 0.0.2 is a Ribbon-based RTF editor with workspace navigation,
+Rico Plus 0.0.3 is a Ribbon-based RTF editor with workspace navigation,
 folder dashboards, background discovery, and conservative file handling. It
 stores ordinary `.rtf` files and does not introduce a private document format.
 
@@ -15,6 +15,7 @@ stores ordinary `.rtf` files and does not introduce a private document format.
 - Rico Icons Classic and Rico Icons New, each with light and dark variants
 - Searchable shortcuts with case-insensitive, modifier-order-independent matching
 - Safe create, duplicate, rename, move, import, and removal operations
+- F2 renames either the active RTF file or the selected Workspace subfolder
 - Atomic RTF saving, external-change detection, and bounded file loading
 - Save, Save As, Save and New, Save and Dashboard, and Save and Exit
 - Standards-based RTF lists plus curated LibreOffice interoperability coverage
@@ -61,12 +62,21 @@ that workflow.
 ```bash
 ./rico_plus/packaging/fedora/install-build-deps.sh
 ./rico_plus/packaging/fedora/build-appimage.sh
-chmod +x rico_plus/dist/Rico_Plus-0.0.2-x86_64.AppImage
-./rico_plus/dist/Rico_Plus-0.0.2-x86_64.AppImage
+chmod +x rico_plus/dist/Rico_Plus-0.0.3-x86_64.AppImage
+./rico_plus/dist/Rico_Plus-0.0.3-x86_64.AppImage
 ```
 
 The desktop launcher accepts multiple RTF paths through `%F`. AppImage mode
 keeps configuration and documents outside the read-only bundle.
+
+## Configuration and diagnostics
+
+Configuration uses Qt's per-user application-config location under the Rico
+Plus application identity. Optional shutdown timing is enabled with:
+
+```bash
+RICO_PLUS_PROFILE_SHUTDOWN=1 python main.py
+```
 
 ## Validation
 

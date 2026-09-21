@@ -4,6 +4,7 @@
 
 | Version | Support |
 | --- | --- |
+| 0.0.2-r1 | Security and critical reliability fixes |
 | 0.0.2 | Security and critical reliability fixes |
 | 0.0.1-r7 | Security and critical reliability fixes |
 | 0.0.1-r6 | Security and critical reliability fixes |

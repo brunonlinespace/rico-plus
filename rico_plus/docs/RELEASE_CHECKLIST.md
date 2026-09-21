@@ -1,8 +1,8 @@
-# Rico Plus 0.0.2 Release Checklist
+# Rico Plus 0.0.3 Release Checklist
 
 ## Source
 
-- [ ] `python main.py --version` reports `Rico Plus 0.0.2`
+- [ ] `python main.py --version` reports `Rico Plus 0.0.3`
 - [ ] `python -m rico_plus.tools.release_check` passes
 - [ ] `SOURCE_MANIFEST.sha256` verifies from the package directory
 - [ ] Freshly extracted archive passes the same release check
@@ -25,8 +25,16 @@
 - [ ] No embedded editor or Dashboard command provider advertises a menu bar
 - [ ] Classic/New icons work in light and dark themes
 - [ ] `Ctrl+O` opens workspace management
+- [ ] F2 renames the active document, or the selected/open subfolder when no document is active; the Workspace root stays protected
+- [ ] Editor status is `Insert/Overwrite | Chars, Words | percentage | flexible status`; no filepath is present
+- [ ] Counter/zoom changes and long editor-status messages do not increase the window minimum width
+- [ ] Editor status order is Insert/Overwrite | Chars, Words | flexible status | percentage, with zoom pinned at the far right
+- [ ] Dark Editor toggle reports in the editor status field; App Theme reports in the main Rico Plus status bar
 - [ ] All five save workflows behave correctly
 - [ ] External OS-open files remain transient and uncopied
+- [ ] Closing with unsaved content prompts before staged shutdown begins
+- [ ] Closing during a scan shows the responsive Closing dialog and scanner-stop stage
+- [ ] A scanner-stop failure restores the application instead of exiting
 
 ## AppImage
 
@@ -35,10 +43,10 @@
 - [ ] Official icons render at each installed size
 - [ ] Source and AppImage use writable external configuration/workspaces
 - [ ] Host editor, folder, browser, print, and PDF routes work
-- [ ] `--appimage-extract-and-run --version` reports 0.0.2
+- [ ] `--appimage-extract-and-run --version` reports 0.0.3
 
 ## Publish
 
-- [ ] Tag `v0.0.2`
+- [ ] Tag `v0.0.3`
 - [ ] Build from the tagged source
 - [ ] Publish source, AppImage, checksum, build information, and release notes

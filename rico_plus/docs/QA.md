@@ -14,7 +14,7 @@ splitter, checks the registered-Workspace quick selector, verifies shortcut
 ownership, and exercises direct Ribbon Save against the sidebar dirty marker.
 It also verifies that the shell remains the only application-menu owner and
 that its complete menu inventory cannot change with Dashboard/editor/sidebar
-focus.
+focus. The exp9-r1 gate additionally verifies the stable editor-status geometry and ownership: no filepath, fixed-width operation/counter/zoom fields, live word count, a zero-minimum flexible middle message field, zoom pinned at the far right, Dark Editor feedback in the editor bar, and App Theme feedback in the main status bar.
 
 ## High-value manual sequences
 
@@ -46,6 +46,8 @@ focus.
 - Test Save, Save As, Save and New, Save and Dashboard, and Save and Exit.
 - Edit and Ribbon-save a file; confirm `[edited]` clears immediately everywhere.
 - Search shortcuts with reordered forms such as `shift ctrl s` and `ctl s`.
+- Confirm the editor status reads `Insert/Overwrite | Chars, Words | percentage | status message`; the full filepath appears only in the file header.
+- Grow the document/counters, change zoom from 50% through 300%, and trigger long editor-status messages; confirm the window minimum width does not change.
 
 ### Workspace and OS opening
 
@@ -60,5 +62,9 @@ focus.
 
 - Replace a file externally before saving and verify the conflict prompt.
 - Attempt Save As onto another open document and verify rejection.
-- Close during an active scan and with unsaved content.
+- Close with unsaved content and verify the unsaved-document decision occurs before the closing dialog starts.
+- Close during an active scan and verify the staged `ClosingDialog` remains responsive while the scanner is cancelled/stopped.
+- Verify the stages read `Saving your preferences…`, `Stopping the workspace scanner…`, and `Closing Rico Plus…`.
+- Force/observe a scanner-stop failure and verify the main application is restored and closing is cancelled.
+- Run `python rico_plus/tools/shutdown_check.py`.
 - Verify host browser, file manager, print, and PDF routes in the AppImage.

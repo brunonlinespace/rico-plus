@@ -1,10 +1,11 @@
 # Rico Plus Roadmap
 
-## 0.0.2 maintenance
+## 0.0.4 — tab stabilization
 
-- Correct release-blocking RTF fidelity, file-safety, or packaging defects.
-- Expand desktop/AppImage validation across Fedora, X11, and Wayland.
-- Measure very large workspace scans and Dashboard behavior.
+- Stabilize tab lifecycle and state transitions.
+- Harden tab selection, close, restore, and document-binding behavior.
+- Preserve the canonical 0.0.3 workspace, Ribbon, editor, and Dashboard behavior while tab work is isolated.
+- Treat unrelated feature work as out of scope for the 0.0.4 stabilization line.
 
 ## Later candidates
 

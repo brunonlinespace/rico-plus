@@ -33,9 +33,9 @@ container using `ALLOW_ROOT_BUILD=1`.
 Expected output:
 
 ```text
-rico_plus/dist/Rico_Plus-0.0.2-x86_64.AppImage
-rico_plus/dist/Rico_Plus-0.0.2-x86_64.AppImage.sha256
-rico_plus/dist/Rico_Plus-0.0.2-x86_64.AppImage.build-info.txt
+rico_plus/dist/Rico_Plus-0.0.3-x86_64.AppImage
+rico_plus/dist/Rico_Plus-0.0.3-x86_64.AppImage.sha256
+rico_plus/dist/Rico_Plus-0.0.3-x86_64.AppImage.build-info.txt
 ```
 
 Validate the final artifact on the intended X11 and Wayland desktop targets.
