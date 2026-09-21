@@ -1,0 +1,57 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Packaging and AppImage output
+build/
+dist/
+dist-appimage/
+AppDir/
+*.egg-info/
+*.AppImage
+*.AppImage.zsync
+*.squashfs
+
+# User workspace content (retain the placeholder)
+my library/*
+!my library/.gitkeep
+Rico Plus Workspace/
+workspace/
+
+# Rico Plus local/runtime files
+shutdown-timing.jsonl
+*.importing
+.rico-plus-write-test
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editors and operating systems
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Local archives and logs
+*.zip
+*.tar
+*.tar.gz
+*.log
