@@ -22,6 +22,100 @@
     <binary>rico-plus</binary>
   </provides>
   <releases>
+    <release version="0.0.3" date="2026-09-21">
+      <description><p>Canonical release closing the 0.0.3 experimental line, including the finalized workspace-command layout and main Dashboard touchscreen panning.</p></description>
+    </release>
+    <release version="0.0.3-exp12-r1" date="2026-09-19">
+      <description><p>Moves Launch New Window directly below Manage Workspaces and assigns Ctrl+Alt+Shift+N.</p></description>
+    </release>
+    <release version="0.0.3-exp12" date="2026-09-19">
+      <description><p>Restored Ricopad-style touchscreen drag/pan on the persistent Rico Plus Ribbon using Qt QScroller touch gesture arbitration.</p></description>
+    </release>
+    <release version="0.0.3-exp11" date="2026-09-19">
+      <description>
+        <p>Softens the explicit Light theme to the approved neutral-gray palette while leaving System and Dark themes unchanged.</p>
+      </description>
+    </release>
+    <release version="0.0.3-exp9-r8" date="2026-09-19">
+      <description>
+        <p>Moves Focused Mode immediately before Locked Mode in the View menu while retaining the separator after Locked Mode.</p>
+      </description>
+    </release>
+    <release version="0.0.3-exp9-r7" date="2026-09-19">
+      <description>
+        <p>Restores F3 to Find Next, maps Ctrl+Shift+L to Bullet List, relocates unbound Launch New Window, and completes the keyboard-shortcuts catalogue including nested formatting commands.</p>
+      </description>
+    </release>
+    <release version="0.0.3-exp9-r6" date="2026-09-19">
+      <description>
+        <p>Assigns F3 to New Window and removes the conflicting F3 assignment from Find Next.</p>
+      </description>
+    </release>
+    <release version="0.0.3-exp9-r5" date="2026-09-19">
+      <description>
+        <p>Remaps Font to Ctrl+Shift+F and adds Ctrl+Shift+] / Ctrl+Shift+[ for font-size increase and decrease.</p>
+      </description>
+    </release>
+    <release version="0.0.3-exp9-r4" date="2026-09-19">
+      <description>
+        <p>Renames Show File Header to File Header and assigns Ctrl+Alt+Shift+F to toggle it, transferring that shortcut from Font to avoid ambiguity.</p>
+      </description>
+    </release>
+    <release version="0.0.3-exp9-r3" date="2026-09-19">
+      <description>
+        <p>Swaps the Ribbon positions of Zoom In and Zoom Out; no other functional change.</p>
+      </description>
+    </release>
+    <release version="0.0.3-exp9-r2" date="2026-09-19">
+      <description>
+        <p>Removes expensive live word counting, reorders the compact editor status fields, and normalizes the runtime desktop identity to rico-plus.</p>
+      </description>
+    </release>
+    <release version="0.0.3-exp9-r1" date="2026-09-19">
+      <description>
+        <p>Refines the editor status layout by pinning zoom at the far right, restoring Dark Editor feedback to the editor status field, and routing App Theme feedback to the main application status bar.</p>
+      </description>
+    </release>
+    <release version="0.0.3-exp9" date="2026-09-19">
+      <description>
+        <p>Stabilizes the editor status bar: removes the duplicated filepath, adds word count, reserves fixed statistic widths, and makes status messages horizontally elastic.</p>
+      </description>
+    </release>
+    <release version="0.0.3-exp8-r3" date="2026-09-19">
+      <description>
+        <p>Renames Lock Editor/Collapsed Mode to Locked Mode/Focused Mode and opens locked documents at the top to match Marko Plus behavior.</p>
+      </description>
+    </release>
+    <release version="0.0.3-exp8-r2" date="2026-09-19">
+      <description>
+        <p>Adds Marko Plus-style F2 folder rename parity while retaining safe document rename behavior and protecting the Workspace root.</p>
+      </description>
+    </release>
+    <release version="0.0.3-exp8-r1" date="2026-09-19">
+      <description>
+        <p>Replaces unsafe Keep My Version handling with Save Version As, preserving externally changed source files while saving the Rico editor version to a different path.</p>
+      </description>
+    </release>
+    <release version="0.0.3-exp8" date="2026-09-19">
+      <description>
+        <p>Restores proactive external-change warnings for open RTF documents, with safe Reload/Keep semantics independent of File Header visibility.</p>
+      </description>
+    </release>
+    <release version="0.0.3-exp7" date="2026-09-19">
+      <description><p>Adopts the Marko Plus staged closing workflow with responsive shutdown progress, scanner cancellation, and optional shutdown timing diagnostics.</p></description>
+    </release>
+    <release version="0.0.3-exp6-r3" date="2026-09-19">
+      <description><p>Removes the obsolete duplicate RtfEditorWindow implementation so Rico Plus has one live Ricopad-derived QWidget editor host.</p></description>
+    </release>
+    <release version="0.0.3-exp6-r2" date="2026-09-19">
+      <description><p>Restores Ricopad-style programmatic New File creation; workspace documents no longer depend on a bundled RTF template.</p></description>
+    </release>
+    <release version="0.0.3-exp3" date="2026-09-18">
+      <description><p>Experimental Marko-pattern editor-surface integration rebase.</p></description>
+    </release>
+    <release version="0.0.2-r1" date="2026-09-18">
+      <description><p>Unified status visibility, persistent file-header visibility, and AppMenu-only Collapsed Mode.</p></description>
+    </release>
     <release version="0.0.2" date="2026-09-17">
       <description><p>Restores Marko-style file headings, fixes live theme/editor-theme synchronization, refines Rico icon-family selectors, and makes the existing Rico canvas focus accent persistent.</p></description>
     </release>

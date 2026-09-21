@@ -12,4 +12,4 @@ Keywords=RTF;Editor;Notes;Workspace;
 MimeType=application/rtf;text/rtf;application/x-rtf;
 StartupNotify=true
 StartupWMClass=rico-plus
-X-AppImage-Version=0.0.2
+X-AppImage-Version=0.0.3
