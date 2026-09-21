@@ -1,0 +1,7 @@
+# Optional workspace-relative paths or glob patterns to skip.
+# Rename this file to .rico-plus-ignore and edit as needed.
+
+large-data
+archives/**
+downloads
+*.backup
