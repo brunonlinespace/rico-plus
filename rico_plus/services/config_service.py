@@ -55,6 +55,7 @@ class ConfigService:
         "setup_completed": False,
         "show_setup_assistant": False,
         "show_status_bar": True,
+        "show_file_header": True,
         "lock_editor": False,
         "editor_icon_set": "new",
         "editor_canvas_follows_app_theme": True,
