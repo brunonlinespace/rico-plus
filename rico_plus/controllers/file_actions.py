@@ -35,6 +35,7 @@ from rico_plus.services.file_io import (
     rename_path_no_replace,
 )
 from rico_plus.services.desktop_launcher import DesktopLauncher
+from rico_plus.services.rtf_new_document import build_new_document_rtf_from_config
 
 
 class FileActionsController(QObject):
@@ -56,6 +57,7 @@ class FileActionsController(QObject):
         editor_manager: EditorManager,
         desktop_launcher: DesktopLauncher,
         watcher: FilesystemWatcher | None = None,
+        config_directory: str | Path | None = None,
         parent_widget: QWidget | None = None,
         parent: QObject | None = None,
     ) -> None:
@@ -66,6 +68,11 @@ class FileActionsController(QObject):
         self.editor_manager = editor_manager
         self.desktop_launcher = desktop_launcher
         self.watcher = watcher
+        self.config_directory = (
+            Path(config_directory).expanduser().resolve(strict=False)
+            if config_directory is not None
+            else Path.home() / ".config" / "rico-plus"
+        )
         self.parent_widget = parent_widget
         self._move_in_progress = False
 
@@ -459,18 +466,15 @@ class FileActionsController(QObject):
             )
             return None
 
-        template = (
-            Path(__file__).resolve().parent.parent
-            / "assets"
-            / "templates"
-            / "default-document.rtf"
-        )
         temporary: Path | None = None
         descriptor: int | None = None
         try:
-            payload = template.read_bytes()
+            # Ricopad semantics: a new document is generated from the saved
+            # New Document Defaults.  Workspace creation must never depend on
+            # a bundled .rtf template existing on disk.
+            payload = build_new_document_rtf_from_config(self.config_directory)
             if not payload.startswith(b"{\\rtf") or not payload.rstrip().endswith(b"}"):
-                raise ValueError("The bundled new-document template is invalid.")
+                raise ValueError("The generated new-document payload is invalid.")
             descriptor, raw_path = tempfile.mkstemp(
                 prefix=f".{destination.name}.",
                 suffix=".creating",

@@ -153,6 +153,8 @@ class EditorManager(QObject):
         page.set_view_only(bool(self.config.get("lock_editor", False)))
         self.current_folder = None; self.current_document = document
         self.stack.setCurrentWidget(page)
+        if page.view_only:
+            page.scroll_to_top()
         page.editor.setFocus()
         self.current_document_changed.emit(document)
         return page
@@ -260,6 +262,16 @@ class EditorManager(QObject):
             page = state.editor_page
             if isinstance(page, EditorPage):
                 page.apply_preferences()
+
+    def show_current_editor_status(self, message: str, timeout: int = 0) -> None:
+        """Route an editor-scoped message to the currently open document page."""
+        document = self.current_document
+        if document is None:
+            return
+        state = self.states.get(document.path)
+        page = state.editor_page if state is not None else None
+        if isinstance(page, EditorPage):
+            page.show_editor_status(message, timeout)
 
     def close_document(self, document_or_path) -> bool:
         document = self._resolve_document(document_or_path)
