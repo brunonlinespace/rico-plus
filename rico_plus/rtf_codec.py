@@ -683,6 +683,14 @@ def rtf_to_html(payload, *, return_auto_foreground=False, return_model=False):
 
     def end_paragraph(force=False):
         nonlocal current, paragraph_count
+        # A blank RTF paragraph still has real paragraph/typing semantics.
+        # Ricopad's New Document Defaults deliberately create a blank paragraph,
+        # so capture the *current* state at \par instead of leaving the style
+        # snapshot from the earlier \pard.  Otherwise alignment/line spacing
+        # (and the typing style) disappear when that blank RTF is reopened.
+        if not current["runs"]:
+            current["style"] = _rtf_paragraph_signature(state)
+            current["typing_signature"] = _rtf_run_signature(state)
         if current["runs"] or force or not paragraphs:
             paragraph_count += 1
             if paragraph_count > MAX_RTF_PARAGRAPHS:
@@ -694,6 +702,9 @@ def rtf_to_html(payload, *, return_auto_foreground=False, return_model=False):
         nonlocal current, table_row_cells, table_cell_count
         if table_row_cells is None:
             table_row_cells = []
+        if not current["runs"]:
+            current["style"] = _rtf_paragraph_signature(state)
+            current["typing_signature"] = _rtf_run_signature(state)
         if current["runs"] or force:
             table_cell_count += 1
             if table_cell_count > MAX_RTF_TABLE_CELLS:
@@ -1623,6 +1634,13 @@ def populate_qtextdocument_from_rtf_model(document, model):
             active_lists.clear()
 
         _rtf_insert_model_runs(cursor, paragraph, document, fonts, colours)
+        # Empty paragraphs have no run from which Qt can recover the insertion
+        # format. Preserve the RTF typing baseline explicitly so a blank new
+        # document reopens with the user's Bold/Italic/font settings intact.
+        if not paragraph.get("runs") and paragraph.get("typing_signature") is not None:
+            cursor.setBlockCharFormat(
+                _rtf_model_char_format(paragraph.get("typing_signature"), fonts, colours)
+            )
         if list_type:
             # Qt paints a list marker from the block character baseline. Keep
             # it aligned with the paragraph's first real text run instead of

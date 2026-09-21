@@ -4,9 +4,9 @@
 # Pythoine can verify an extracted portable source without importing PyQt6.
 APP_NAME = "Rico Plus"
 APP_ID = "rico-plus"
-APP_VERSION = "0.0.2"
+APP_VERSION = "0.0.3"
 PUBLISHER_ID = "brunonlinespace"
-DESKTOP_ID = "io.github.brunonlinespace.rico_plus"
+DESKTOP_ID = "rico-plus"
 
 __all__ = [
     "APP_NAME",

@@ -162,7 +162,7 @@ def main() -> int:
             "but its folder is unavailable:\n\n"
             f"{requested_workspace}\n\n"
             f"Rico Plus will open '{fallback_project.name}' instead. Use "
-            "File > Workspace(s) > Manage Workspaces to relink it.",
+            "File > Workspace(s) > Open / Manage Workspaces to relink it.",
         )
         requested_workspace = fallback
 

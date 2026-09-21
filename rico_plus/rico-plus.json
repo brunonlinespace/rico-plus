@@ -1,9 +1,9 @@
 {
   "name": "Rico Plus",
   "id": "rico-plus",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher_id": "brunonlinespace",
-  "desktop_id": "io.github.brunonlinespace.rico_plus",
+  "desktop_id": "rico-plus",
   "repository": "https://github.com/brunonlinespace/rico-plus",
   "tagline": "Friendly. Fast. Focused."
 }
