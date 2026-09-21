@@ -1,11 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
-<circle cx="32" cy="32" r="10" fill="#ED1C24" stroke="#2F3741" stroke-width="3"/>
-<path d="M32 9L32 16" stroke="#2F3741" stroke-width="3" stroke-linecap="round"/>
-<path d="M32 48L32 55" stroke="#2F3741" stroke-width="3" stroke-linecap="round"/>
-<path d="M9 32L16 32" stroke="#2F3741" stroke-width="3" stroke-linecap="round"/>
-<path d="M48 32L55 32" stroke="#2F3741" stroke-width="3" stroke-linecap="round"/>
-<path d="M15 15L20 20" stroke="#2F3741" stroke-width="3" stroke-linecap="round"/>
-<path d="M44 44L49 49" stroke="#2F3741" stroke-width="3" stroke-linecap="round"/>
-<path d="M15 49L20 44" stroke="#2F3741" stroke-width="3" stroke-linecap="round"/>
-<path d="M44 20L49 15" stroke="#2F3741" stroke-width="3" stroke-linecap="round"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><g fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="32" cy="32" r="9" fill="#D32F2F" stroke="#2F343A" stroke-width="2.5"/><path d="M32 9V16M32 48V55M9 32H16M48 32H55M16 16L21 21M43 43L48 48M48 16L43 21M21 43L16 48" stroke="#2F343A" stroke-width="3"/></g></svg>
